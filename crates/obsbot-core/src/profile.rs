@@ -151,6 +151,13 @@ pub struct ShortSpec {
     pub prefix: Vec<u8>,
     #[serde(default = "u8_enc")]
     pub value: ValueEncoding,
+    /// A packed record: several features share one short setting `id`, each
+    /// owning bit fields of one status word. The payload is the word split
+    /// into these `[shift, width]` fields, each little-endian in
+    /// `ceil(width / 8)` bytes. Writing one feature reads the current word
+    /// from the status block and changes only that feature's field.
+    #[serde(default)]
+    pub packed: Vec<[u8; 2]>,
 }
 
 /// How a feature reads a setting that holds both a switch and a level,
@@ -207,6 +214,9 @@ pub struct VendorBinding {
     pub status_value: ValueEncoding,
     /// Bits of the status byte holding the value (shifted down).
     pub status_mask: Option<u8>,
+    /// `[shift, width]` of the value inside the status word, for features
+    /// that share one word (see `ShortSpec::packed`).
+    pub status_bits: Option<[u8; 2]>,
     /// For toggles whose camera value is the opposite of the label (e.g.
     /// "Disable Microphone" is 1 while the microphone is enabled).
     #[serde(default)]

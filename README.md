@@ -45,7 +45,7 @@ using a vendor protocol reverse-engineered from USB captures.
 | OBSBOT Tiny 2 Lite | `3564:fef9` | Assumed supported, unverified (see below) |
 | OBSBOT Tiny 4K | `3564:fef4` | Assumed supported, unverified (see below) |
 | OBSBOT Meet 2 | `3564:fefb` | Assumed supported minus gimbal features, unverified (see below) |
-| OBSBOT Meet SE | `3564:fefe` | Assumed supported minus gimbal features, unverified (see below) |
+| OBSBOT Meet SE | `3564:fefe` | Partly verified on firmware 4.6.4.1: Auto Framing, Field of View, image and audio settings, wake from sleep (see below) |
 | Other OBSBOT models | `3564:*` | Standard UVC controls only (see below) |
 | Any other UVC webcam | – | Standard UVC controls, with `--all` / `OBSBOT_ALL_CAMERAS=1` |
 
@@ -69,6 +69,20 @@ them rather than guessed. If something doesn't work, or you can capture
 one of these models' traffic, see
 [Adding support for another camera](#adding-support-for-another-camera).
 
+**Meet SE (firmware 4.6.4.1) so far:** Auto Framing (the palm-up gesture), its
+Composition Mode, the gesture Zoom with its Zoom Factor, and Field of View are
+captured from OBSBOT Center and verified with readback; waking the camera
+from sleep works; HDR, Mirror Image, the audio settings (Mic Status During
+Sleep, Noise Reduction, Auto Gain, Disable Microphone, Radio Distance), Auto
+Sleep / Sleep Time and the Status Light match the captures or were read back
+from Linux. High-fps Recording needs no vendor command on Linux: pick the
+1920x1080 100 fps or 1280x720 150/120 fps MJPEG format in the recording app.
+The Tiny SE gesture switches (Locked Target, the master switch, Dynamic Zoom,
+Direction Flip) did not stop the palm gesture and the app has no such
+controls, so they are not bound. Manual zoom is unavailable (the app zooms
+with a digital crop that is not bound yet). Everything else still reuses the
+Tiny SE bindings and is unverified.
+
 ## Features
 
 Status on the Tiny SE:
@@ -76,6 +90,8 @@ Status on the Tiny SE:
 | Area | Feature | Status |
 |---|---|---|
 | AI tracking | Human / Group / Hand Tracking modes | ✅ |
+| Auto Framing | Meet SE: on/off, Composition Mode (Group, Upper Body, Single Close-up) and the gesture Zoom with its Zoom Factor (1-4x), all with readback | ✅ |
+| Field of View | Meet SE: Wide / Medium / Narrow, with readback (ignored while the camera sleeps) | ✅ |
 | Gesture control | Master switch, Locked Target, Zoom, Dynamic Zoom, Direction Flip, Zoom Factor (1–4×) | ✅ |
 | View & gimbal | Joystick (velocity control), speed, view reset | ✅ |
 | View & gimbal | Manual zoom (1–4×), View and Gimbal Reverse | ✅ |
@@ -91,7 +107,7 @@ Status on the Tiny SE:
 | Preview | Live MJPEG preview, 1080p/720p at 30/60 fps | ✅ |
 | Device | Hot-plug and reboot recovery | ✅ |
 | Panel | Tray indicator with quick toggles and show/hide | ✅ |
-| Pending captures | Custom sleep background, factory reset | 🚧 greyed out |
+| Pending captures | Custom sleep background (Meet SE: upload captured, its chunk checksum unknown, see docs/protocol.md), factory reset (command known, not exposed) | 🚧 greyed out |
 | Out of scope | Beauty/background effects, portrait mode, rotate/flip, recording, firmware updates | ❌ ¹ |
 
 ¹ In OBSBOT Center these effects (and portrait mode, rotate and flip) run on
