@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { device } from "../device.svelte";
-  import Icon from "./Icon.svelte";
-  import Popover from "./Popover.svelte";
-  import ConfirmDialog from "./ConfirmDialog.svelte";
-  import { preview } from "../preview.svelte";
+  import { device } from "../../device.svelte";
+  import Icon from "../ui/Icon.svelte";
+  import Popover from "../ui/Popover.svelte";
+  import ConfirmDialog from "../ui/ConfirmDialog.svelte";
+  import { preview } from "../../preview.svelte";
 
   // OBSBOT Center's Portrait mode and rotate/flip buttons send nothing to
   // the camera: they transform its virtual camera output on the PC, so
@@ -19,6 +19,17 @@
     { value: 1, label: "Group", icon: "group" },
     { value: 3, label: "Hand Tracking", icon: "hand" },
   ];
+
+  // Modes beyond these that the camera's profile offers (e.g. the Tiny 3's
+  // Whiteboard, Desk and Voice Tracking), shown in a second column.
+  const extraIcons: Record<number, string> = { 4: "whiteboard", 5: "desk", 7: "mic" };
+  const extraModes = $derived.by(() => {
+    const kind = device.features.ai_mode?.kind;
+    if (kind?.type !== "choice") return [];
+    return kind.options
+      .filter((o) => o.value !== 0 && !modes.some((m) => m.value === o.value))
+      .map((o) => ({ value: o.value, label: o.label, icon: extraIcons[o.value] ?? "target" }));
+  });
 
   function selectMode(value: number) {
     device.set("ai_mode", aiMode === value ? 0 : value);
@@ -72,6 +83,16 @@
           </button>
         {/each}
       </div>
+      {#if extraModes.length}
+        <div class="stack">
+          {#each extraModes as m (m.value)}
+            <button class="mode small" class:sel={aiMode === m.value} disabled={!aiSupported} onclick={() => selectMode(m.value)}>
+              <Icon name={m.icon} size={14} />
+              <span>{m.label}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
       <button
         class="ghost icon"
         title="Disable AI features and lock"

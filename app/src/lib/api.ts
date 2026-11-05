@@ -49,10 +49,62 @@ export type Snapshot = {
   firmware: { version: string; serial: string | null } | null;
   /** Preset names by slot; null for an empty slot. */
   presets: (string | null)[];
+  preset_rename: boolean;
+  preset_delete: boolean;
   features: FeatureState[];
 };
 
+export type LogEntry = {
+  seq: number;
+  time_ms: number;
+  level: "trace" | "info" | "warn";
+  message: string;
+};
+
+/** Live camera state decoded from the status block (crates/obsbot-core/src/status.rs). */
+export type LiveStatus = {
+  power: string;
+  ai_mode: number;
+  ai_mode_label: string;
+  ai_sub_mode: number;
+  zoom: number;
+  fov: string | null;
+  fps: number;
+  light_level: number;
+  event_count: number;
+  /** Wireless microphone state in words (status[41]). */
+  mic: string;
+  /** 0 built-in microphones, 3 wireless mic. */
+  audio_source: number;
+  raw: string;
+};
+
+export type UpdateCheck = {
+  current: string;
+  latest: string;
+  update_available: boolean;
+  page: string;
+};
+
+/** A wireless microphone slot (Vox SE): TX1 or TX2. */
+export type MicSlot = {
+  slot: number;
+  connected: boolean;
+  battery: number | null;
+  charging: boolean;
+  muted: boolean;
+};
+
 export type PreviewConfig = { width: number; height: number; fps: number };
+/** The virtual camera ("OBSCura Camera") and whether the camera is shared
+ * through it. `device` is null until v4l2loopback is loaded; while sharing,
+ * the preview reads the frames from `socket`. */
+export type ShareStatus = {
+  device: string | null;
+  running: boolean;
+  socket: string;
+  setup: string[];
+};
 export type PreviewFormat = PreviewConfig;
 
 export const api = {
@@ -61,6 +113,14 @@ export const api = {
   listCameras: () => invoke<CameraInfo[]>("list_cameras"),
   openCamera: (path: string) => invoke<Snapshot>("open_camera", { path }),
   getFeatures: () => invoke<FeatureState[]>("get_features"),
+  /** Activity log entries newer than `since` (0 for all). */
+  getLog: (since: number) => invoke<LogEntry[]>("get_log", { since }),
+  liveStatus: () => invoke<LiveStatus | null>("live_status"),
+  wirelessMics: () => invoke<MicSlot[] | null>("wireless_mics"),
+  /** Opens the Diagnostics window, or closes it if it's open. */
+  toggleDiagnostics: () => invoke<void>("toggle_diagnostics"),
+  /** Compares the camera's firmware with OBSBOT's download page (network). */
+  checkFirmwareUpdate: () => invoke<UpdateCheck>("check_firmware_update"),
   setFeature: (id: string, value: number) =>
     invoke<FeatureState[]>("set_feature", { id, value }),
   /** Starts streaming JPEG frames to `onFrame`. Call `previewReady` after
@@ -78,8 +138,13 @@ export const api = {
   renamePreset: (slot: number, name: string) =>
     invoke<(string | null)[]>("rename_preset", { slot, name }),
   recallPreset: (slot: number) => invoke<void>("recall_preset", { slot }),
+  deletePreset: (slot: number) => invoke<(string | null)[]>("delete_preset", { slot }),
   previewReady: () => invoke<void>("preview_ready"),
   stopPreview: () => invoke<void>("stop_preview"),
+  shareStatus: () => invoke<ShareStatus>("share_status"),
+  shareStart: (camera: string, config: PreviewConfig) =>
+    invoke<ShareStatus>("share_start", { camera, config }),
+  shareStop: () => invoke<ShareStatus>("share_stop"),
 };
 
 export function formatValue(kind: FeatureKind, value: number): string {

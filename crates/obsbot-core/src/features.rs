@@ -103,12 +103,17 @@ features! {
     // AI tracking (bottom bar)
     AiMode                "ai_mode" => "ai", "AI Mode", choice(&[(0, "Off"), (2, "Human"), (1, "Group"), (3, "Hand Tracking")]);
     AiLock                "ai_lock" => "ai", "AI Lock", FeatureKind::Toggle;
+    TrackingSpeed         "tracking_speed" => "ai", "Tracking Speed", choice(&[(0, "Very Slow"), (1, "Slow"), (2, "Normal"), (3, "Fast"), (4, "Very Fast")]);
+    TrackingMotion        "tracking_motion" => "ai", "Motion Mode", FeatureKind::Toggle;
 
     // View and gimbal
     GimbalSpeed           "gimbal_speed" => "gimbal", "Gimbal Speed", choice(&[(0, "Slow"), (1, "Med."), (2, "Fast")]);
     Pan                   "pan" => "gimbal", "Pan", range(-100, 100, 1, None);
     Tilt                  "tilt" => "gimbal", "Tilt", range(-100, 100, 1, None);
     Zoom                  "zoom" => "gimbal", "Manual Zoom", range(100, 400, 100, Some("x"));
+    FieldOfView           "field_of_view" => "gimbal", "Field of View", choice(&[(0, "86°"), (1, "78°"), (2, "65°")]);
+    PresetSpeed           "preset_speed" => "gimbal", "Preset Speed", choice(&[(1, "Slowest"), (2, "Slower"), (4, "Slow"), (6, "Medium"), (8, "Fast"), (10, "Fastest")]);
+    PanReverse            "pan_reverse" => "gimbal", "Reverse Pan Control", FeatureKind::Toggle;
     GimbalReset           "gimbal_reset" => "gimbal", "Reset View", FeatureKind::Action;
     GimbalReverse         "gimbal_reverse" => "gimbal", "View and Gimbal Reverse", FeatureKind::Toggle;
 
@@ -136,7 +141,40 @@ features! {
     NoiseReduction        "noise_reduction" => "audio", "Noise Reduction", choice(&[(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High")]);
     AutoGain              "auto_gain" => "audio", "Auto Gain", FeatureKind::Toggle;
     DisableMicrophone     "disable_microphone" => "audio", "Disable Microphone", FeatureKind::Toggle;
-    PickupDistance        "pickup_distance" => "audio", "Radio Distance", choice(&[(0, "Close"), (1, "Medium"), (2, "Far")]);
+    PickupDistance        "pickup_distance" => "audio", "Radio Distance", choice(&[(0, "Close"), (1, "Standard"), (2, "Far")]);
+    MicCapture            "mic_capture" => "audio", "Microphone On", FeatureKind::Toggle;
+    MicLevel              "mic_level" => "audio", "Level", range(-50, 0, 1, Some(" dB"));
+
+    // Wireless microphones (Vox SE, Tiny 3 series): two slots, TX1 and TX2
+    AudioSource           "audio_source" => "wireless", "Audio Source", choice(&[(0, "Built-in"), (3, "Wireless Mic")]);
+    AudioAutoSelect       "audio_auto_select" => "wireless", "Auto-select Wireless Mic", FeatureKind::Toggle;
+    MicPairTx1            "mic_pair_tx1" => "wireless", "Pair TX1", FeatureKind::Action;
+    MicPairTx2            "mic_pair_tx2" => "wireless", "Pair TX2", FeatureKind::Action;
+    MicPairStop           "mic_pair_stop" => "wireless", "Stop Pairing", FeatureKind::Action;
+    MicForgetTx1          "mic_forget_tx1" => "wireless", "Forget TX1", FeatureKind::Action;
+    MicForgetTx2          "mic_forget_tx2" => "wireless", "Forget TX2", FeatureKind::Action;
+    MicTx1Mute            "mic_tx1_mute" => "wireless", "TX1 Mute", FeatureKind::Toggle;
+    MicTx1Gain            "mic_tx1_gain" => "wireless", "TX1 Gain", range(-12, 12, 1, None);
+    MicTx2Mute            "mic_tx2_mute" => "wireless", "TX2 Mute", FeatureKind::Toggle;
+    MicTx2Gain            "mic_tx2_gain" => "wireless", "TX2 Gain", range(-12, 12, 1, None);
+    SoundTracking         "sound_tracking" => "audio", "Sound-Assisted Tracking", FeatureKind::Toggle;
+    MicLed                "mic_led" => "wireless", "Mic LED", FeatureKind::Toggle;
+    MicVibration          "mic_vibration" => "wireless", "Mic Vibration", FeatureKind::Toggle;
+    MicNoiseSuppression   "mic_noise_suppression" => "wireless", "Noise Suppression", FeatureKind::Toggle;
+    MicNoiseLevel         "mic_noise_level" => "wireless", "Noise Suppression Level", choice(&[(1, "Low"), (2, "Medium"), (3, "High")]);
+    MicButtonEnabled      "mic_button_enabled" => "wireless", "Mic Button Enabled", FeatureKind::Toggle;
+    MicButton             "mic_button" => "wireless", "Mic Button", choice(&[(0, "Human Tracking"), (1, "Switch Tracking Mode"), (2, "Zoom to 1.0x")]);
+
+    // Voice control (Tiny 3 series)
+    VoiceHiTiny           "voice_hi_tiny" => "voice", "\"Hi, Tiny\" (wake up)", FeatureKind::Toggle;
+    VoiceSleepTiny        "voice_sleep_tiny" => "voice", "\"Sleep, Tiny\"", FeatureKind::Toggle;
+    VoiceTrackMe          "voice_track_me" => "voice", "\"Track Me\"", FeatureKind::Toggle;
+    VoiceUnlockMe         "voice_unlock_me" => "voice", "\"Unlock Me\"", FeatureKind::Toggle;
+    VoiceZoomIn           "voice_zoom_in" => "voice", "\"Zoom in Closer\"", FeatureKind::Toggle;
+    VoiceZoomOut          "voice_zoom_out" => "voice", "\"Zoom out Further\"", FeatureKind::Toggle;
+    VoicePresets          "voice_presets" => "voice", "\"Position One/Two/Three\"", FeatureKind::Toggle;
+    VoiceZoomFactor       "voice_zoom_factor" => "voice", "Voice Zoom", choice(&[(17, "1.5x"), (33, "2x"), (50, "2.5x"), (67, "3x"), (83, "3.5x"), (100, "4x")]);
+    VoiceLanguage         "voice_language" => "voice", "Voice Language", choice(&[(1, "English"), (0, "Chinese")]);
 
     // Device sleep
     AutoSleep             "auto_sleep" => "sleep", "Auto Sleep", FeatureKind::Toggle;

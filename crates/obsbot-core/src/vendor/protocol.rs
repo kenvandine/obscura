@@ -22,7 +22,7 @@
 //!   zero-padded. Reading selector 6 returns a status block that reflects
 //!   many settings.
 //!
-//! Decoded from USB captures of OBSBOT Center (see `docs/protocol.md`).
+//! Decoded from USB captures of OBSBOT Center (see `docs/reference/protocol.md`).
 
 pub const XU_UNIT: u8 = 2;
 pub const SEL_COMMAND: u8 = 2;
@@ -35,6 +35,16 @@ pub const DST_SYSTEM: u8 = 0x0d;
 pub const CMD_VERSION: [u8; 2] = [0x08, 0x04];
 /// Serial number, ASCII.
 pub const CMD_SERIAL: [u8; 2] = [0xc8, 0x18];
+
+/// Camera (ISP) module.
+pub const DST_CAMERA: u8 = 0x02;
+/// Pops one event from the camera's event queue (query, no payload; the
+/// queue length is status[43]). Reply: u32 source, u32 type, and an
+/// optional u32 value. Seen in the traffic of OBSBOT's SDK on a Tiny 3.
+pub const CMD_EVENT: [u8; 2] = [0x02, 0x1d];
+/// Wireless microphone (Vox SE) info, 16 bytes (SDK `DevTWSInfo`): see
+/// `status::decode_mics`. Query, no payload.
+pub const CMD_MIC_INFO: [u8; 2] = [0x02, 0xc0];
 
 /// AI/gimbal module.
 pub const DST_GIMBAL: u8 = 0x04;
@@ -50,6 +60,10 @@ pub const CMD_PRESET_RECALL: [u8; 2] = [0xc4, 0x39];
 pub const CMD_PRESET_NAME: [u8; 2] = [0x84, 0x3a];
 /// Preset name query (flags 0x21, payload slot u32).
 pub const CMD_PRESET_NAME_QUERY: [u8; 2] = [0x04, 0x3b];
+/// Empties a preset slot: slot u32 (Tiny 3).
+pub const CMD_PRESET_DELETE: [u8; 2] = [0x84, 0x39];
+/// Stored preset slots, one byte each (Tiny 3).
+pub const CMD_PRESET_LIST: [u8; 2] = [0x04, 0x3d];
 
 const MAGIC: u8 = 0xaa;
 const FLAGS_COMMAND: u8 = 0x25;
@@ -149,6 +163,8 @@ pub fn encode_short(id: u8, value: &[u8]) -> [u8; PACKET_LEN] {
 #[serde(rename_all = "lowercase")]
 pub enum ValueEncoding {
     U8,
+    /// Signed 8-bit (readback; writes as one byte).
+    I8,
     U16,
     U32,
     /// Signed 16-bit (status readback only).
@@ -159,7 +175,7 @@ pub enum ValueEncoding {
 
 pub fn encode_value(enc: ValueEncoding, value: i64, divisor: i64) -> Vec<u8> {
     match enc {
-        ValueEncoding::U8 => vec![value as u8],
+        ValueEncoding::U8 | ValueEncoding::I8 => vec![value as u8],
         ValueEncoding::U16 | ValueEncoding::I16 => (value as u16).to_le_bytes().to_vec(),
         ValueEncoding::U32 => (value as u32).to_le_bytes().to_vec(),
         ValueEncoding::F32 => ((value as f64 / divisor.max(1) as f64) as f32)
@@ -173,6 +189,7 @@ pub fn decode_status(block: &[u8], offset: usize, enc: ValueEncoding) -> Option<
     let b = |n: usize| block.get(offset..offset + n);
     Some(match enc {
         ValueEncoding::U8 => *block.get(offset)? as i64,
+        ValueEncoding::I8 => *block.get(offset)? as i8 as i64,
         ValueEncoding::U16 => u16::from_le_bytes(b(2)?.try_into().ok()?) as i64,
         ValueEncoding::I16 => i16::from_le_bytes(b(2)?.try_into().ok()?) as i64,
         ValueEncoding::U32 => u32::from_le_bytes(b(4)?.try_into().ok()?) as i64,
@@ -233,6 +250,100 @@ mod tests {
         assert_eq!(
             ai[..20],
             padded("aa 25 43 00 0c 00 b8 6a 0a 04 44 32 04 00 42 c0 66 66 06 40")[..20]
+        );
+    }
+
+    #[test]
+    fn tiny_3_gesture_matches_sdk_traffic() {
+        // OBSBOT SDK (libdev 2.1.0) on a Tiny 3: gesture master off, and a
+        // read of the zoom gesture switch.
+        assert_eq!(
+            encode_command(5, 0x04, [0x44, 0x34], &[0, 0, 0, 0, 0])[..21],
+            padded("aa 25 05 00 0c 00 da a3 0a 04 44 34 05 00 ca 5f 00 00 00 00 00")[..21]
+        );
+        assert_eq!(
+            encode_query(7, 0x04, [0x84, 0x34], FLAGS_QUERY_SLOT, &[2, 0, 0, 0])[..20],
+            padded("aa 21 07 00 0c 00 3e 59 0a 04 84 34 04 00 bf bf 02 00 00 00")[..20]
+        );
+    }
+
+    #[test]
+    fn tiny_3_tracking_and_voice_match_sdk_traffic() {
+        // aiSetControlParaR(human, speed mode, fast) and its read, then
+        // cameraSetAudioCtrlStateU(Hi Tiny, on), traced on a Tiny 3.
+        let mut payload = vec![0, 0, 0, 0, 5, 0, 0, 0];
+        payload.extend(encode_value(ValueEncoding::U32, 3, 1));
+        assert_eq!(
+            encode_command(5, 0x04, [0x44, 0x54], &payload)[..27],
+            padded(
+                "aa 25 05 00 0c 00 da 8b 0a 04 44 54 0c 00 84 71 \
+                 00 00 00 00 05 00 00 00 03 00 00"
+            )[..27]
+        );
+        assert_eq!(
+            encode_query(
+                5,
+                0x04,
+                [0x84, 0x54],
+                FLAGS_QUERY_SLOT,
+                &[0, 0, 0, 0, 5, 0, 0, 0]
+            )[..24],
+            padded("aa 21 05 00 0c 00 9f bb 0a 04 84 54 08 00 7a ee 00 00 00 00 05 00 00 00")[..24]
+        );
+        assert_eq!(
+            encode_short(0x15, &[0x00, 0x01])[..4],
+            [0x15, 0x02, 0x00, 0x01]
+        );
+    }
+
+    #[test]
+    fn tiny_3_presets_match_sdk_traffic() {
+        // aiAddGimbalPresetR(slot 2, yaw 30, pitch -10, zoom 1.5) and
+        // aiDelGimbalPresetR(2), traced on a Tiny 3.
+        let mut save = 2u32.to_le_bytes().to_vec();
+        for v in [3000i16, -1000, 0, 150] {
+            save.extend(v.to_le_bytes());
+        }
+        // The SDK's last 12 bytes; the camera stores its own values there
+        // (OBSCura sends zeros, which the camera treats the same).
+        save.extend(hex("8c ff 8c ff d8 00 d8 00 00 00 00 00"));
+        assert_eq!(
+            encode_command(5, DST_GIMBAL, CMD_PRESET_SAVE, &save)[..26],
+            padded("aa 25 05 00 0c 00 1b 66 0a 04 44 39 18 00 e6 80 02 00 00 00 b8 0b 18 fc 00 00")
+                [..26]
+        );
+        assert_eq!(
+            encode_command(5, DST_GIMBAL, CMD_PRESET_DELETE, &2u32.to_le_bytes())[..20],
+            padded("aa 25 05 00 0c 00 4b 66 0a 04 84 39 04 00 bf bf 02 00 00 00")[..20]
+        );
+    }
+
+    #[test]
+    fn vox_se_option_matches_sdk_traffic() {
+        // cameraSetTWSFuncR(LED, off, 0), traced on a Tiny 3.
+        assert_eq!(
+            encode_command(5, 0x02, [0x82, 0xc0], &[0x02, 0x00, 0x00, 0x00])[..20],
+            padded("aa 25 05 00 0c 00 68 85 0a 02 82 c0 04 00 bf bf 02 00 00 00")[..20]
+        );
+    }
+
+    #[test]
+    fn tiny_3_preset_speed_matches_sdk_traffic() {
+        // aiSetGimbalParaR(preset speed, 0.1), traced on a Tiny 3.
+        let mut payload = vec![5, 0, 0, 0];
+        payload.extend(encode_value(ValueEncoding::F32, 1, 10));
+        assert_eq!(
+            encode_command(5, DST_GIMBAL, [0x44, 0x3f], &payload)[..22],
+            padded("aa 25 05 00 0c 00 9b 64 0a 04 44 3f 08 00 d0 5f 05 00 00 00 cd cc cc 3d")[..22]
+        );
+    }
+
+    #[test]
+    fn tiny_3_pan_reverse_matches_sdk_traffic() {
+        // aiSetGimbalParaR(pan reverse, true), traced on a Tiny 3.
+        assert_eq!(
+            encode_command(5, DST_GIMBAL, [0x44, 0x3f], &[4, 0, 0, 0, 1])[..21],
+            padded("aa 25 05 00 0c 00 9b 64 0a 04 44 3f 05 00 fa 5f 04 00 00 00 01")[..21]
         );
     }
 

@@ -8,10 +8,21 @@ authors.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 toml = "0.8"
 nix = { version = "0.29", features = ["ioctl", "fs", "signal", "user"] }
 v4l = "0.14"
+# Firmware update check (opt-in: the indicator doesn't need network code).
+ureq = { version = "3", optional = true }
+
+# The camera's capture level and switch via its ALSA mixer (opt-in: links
+# libasound).
+alsa = { version = "0.12", optional = true }
+
+[features]
+update-check = ["dep:ureq"]
+alsa = ["dep:alsa"]
 
 [dev-dependencies]
 serde_json.workspace = true

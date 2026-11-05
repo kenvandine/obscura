@@ -1,0 +1,466 @@
+# OBSBOT Tiny 3 (3564:ff02).
+#
+# Bindings below are copied from tiny-se.toml. There are no USB captures of
+# this model yet, but it was checked read-only on a Tiny 3 (bcdDevice 5.10):
+# it exposes the same vendor Extension Unit (unit 2, GUID
+# 9a1e7291-6843-4683-6d92-39bc7906ee49, 60-byte selectors), and its
+# selector 6 status block matches the Tiny SE layout -- [9] 1 while awake,
+# [10..12] sleep time 120 s, [14] AF on, [24] AI mode, [31] 0x1e while
+# awake, [33] status light 0..3, [34] 0x10 with the microphone enabled. Its
+# exposure_auto menu is 0 = Auto Mode, 1 = Manual, like the Tiny SE's, and
+# UVC pan/tilt span the same ±130°/±90°.
+#
+# Tested from Linux on firmware 6.6.8.3, set and read back: mirror, status
+# light, HDR, AI mode, AF mode, sleep/resume, manual zoom (the camera ramps
+# it at about 0.2x per second), joystick and re-center (gimbal position
+# query `0466`), the firmware/serial queries, and the gesture switches.
+# Presets use their own format (see [presets] below); the audio and
+# device-sleep settings read back sensibly but haven't been written. See
+# "Adding support for another camera" in README.md.
+#
+# Image controls, pan/tilt/zoom and focus are standard UVC controls
+# (inherited from generic-uvc). AI and gesture features use the vendor
+# protocol on Extension Unit 2 -- see docs/reference/protocol.md.
+#
+# Vendor bindings:
+#   frames = framed commands on selector 2 (dst module, 2-byte cmd, value encoding)
+#   short  = short setting on selector 6: [id, len, value]
+#   status = byte offset in the selector 6 status block used for readback
+
+id = "tiny-3"
+name = "OBSBOT Tiny 3"
+inherits = "generic-uvc"
+
+# Firmware version and serial number via system module queries.
+system_info = true
+
+# Camera events (target lost/found, ...) queue up on the camera; status[43]
+# is the queue length and query dst 02 `021d` pops one. Seen in the SDK's
+# traffic, and read from Linux (target lost/found).
+event_queue = true
+
+# Receiver for OBSBOT's Vox SE wireless microphones (query `02c0`).
+wireless_mics = true
+
+# Status block layout: OBSBOT SDK `CameraStatus::tiny` (docs/reference/protocol.md).
+status_layout = "tiny"
+
+[[match]]
+vendor_id = 0x3564
+product_id = 0xff02
+
+# Latest firmware: OBSBOT's download page, model key in its page data.
+[firmware]
+page = "https://www.obsbot.com/download/obsbot-tiny-3-series"
+key = "tiny3"
+
+# Gimbal presets: 3 slots (the voice commands say "Position One/Two/Three").
+# Traced from OBSBOT's SDK: save dst 04 `4439` (slot u32, yaw, pitch, roll,
+# zoom as int16 x 100, 12 bytes the camera fills itself), recall `c439` as
+# on the Tiny SE, delete `8439`, list `043d` (stored slots, one byte each).
+# Names are written with `843a` but the Tiny SE's name query `043b` gets no
+# answer. Position query `0466` needs no payload here.
+[presets]
+slots = 3
+format = "i16"
+
+# How fast the gimbal moves to a preset (SDK aiSetGimbalParaR, preset
+# speed): dst 04 `443f` [u32 parameter 5, f32 speed], read with query `843f`
+# (flags 0x21, payload u32 parameter). The SDK lists 0.1-0.8; the camera
+# starts at 1.0. Values here are x10. Tested: a 60-degree recall took 1.6 s
+# at 1.0 and 14.3 s at 0.1. The same command's pan/pitch limits are stored
+# but didn't limit UVC or joystick moves, so they're left out.
+# Pan reverse (parameter 4, u8 bool): turns joystick (velocity) moves the
+# other way. Tested: "right" for 2.5 s went to -12.4 degrees normally and
+# +12.3 reversed; UVC pan positions aren't affected.
+[features.pan_reverse]
+query = { dst = 0x04, cmd = "843f", flags = 0x21, payload = "04000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "443f", prefix = "04000000" }]
+
+[features.preset_speed]
+query = { dst = 0x04, cmd = "843f", flags = 0x21, payload = "05000000", offsets = [0], value = "f32", scale = 10 }
+frames = [{ dst = 0x04, cmd = "443f", prefix = "05000000", value = "f32", divisor = 10 }]
+
+# Joystick: [roll, pitch, yaw] float32 velocity, resent ~10 Hz, zeros to stop.
+# Seen in OBSBOT Center captures with magnitudes up to ~8.5. Positive yaw
+# turns the view right; positive pitch tilts it down, so "up" is negated
+# (OBSBOT Center sends negative pitch for joystick up).
+[gimbal_velocity]
+dst = 0x04
+cmd = "8464"
+max_speed = 10.0
+pitch_sign = -1.0
+
+# Standard control overrides. The Tiny SE's exposure_auto menu is
+# 0 = Auto Mode, 1 = Manual (not the usual 3 = Aperture Priority).
+[features.auto_exposure]
+v4l2 = 0x009a0901
+map = [[1, 0], [0, 1]]
+
+# Gesture control: one command for every gesture setting, unlike the Tiny
+# SE's command per switch (which the Tiny 3 accepts and ignores). Write dst
+# 04 `4434` with a u32 setting type then the value; read with query `8434`
+# (flags 0x21) and the u32 type as payload, which answers u8 (switches) or
+# f32 (zoom factor). Types: 0 master, 1 target selection (palm: tracking
+# on/off), 2 zoom ("L": 2x in/out), 3 dynamic zoom, 8 zoom factor. Seen in
+# the traffic of OBSBOT's SDK (libdev 2.1.0) and confirmed on the camera:
+# with type 1 or 2 off, that gesture is ignored. Switching the master off
+# also turns the gestures off, and switching it on doesn't bring them back,
+# so the master sends all four.
+[features.gesture_control]
+query = { dst = 0x04, cmd = "8434", flags = 0x21, payload = "00000000", offsets = [0] }
+frames = [
+  { dst = 0x04, cmd = "4434", prefix = "00000000" },
+  { dst = 0x04, cmd = "4434", prefix = "01000000" },
+  { dst = 0x04, cmd = "4434", prefix = "02000000" },
+  { dst = 0x04, cmd = "4434", prefix = "03000000" },
+]
+
+[features.gesture_locked_target]
+query = { dst = 0x04, cmd = "8434", flags = 0x21, payload = "01000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "4434", prefix = "01000000" }]
+
+[features.gesture_zoom]
+query = { dst = 0x04, cmd = "8434", flags = 0x21, payload = "02000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "4434", prefix = "02000000" }]
+
+[features.gesture_dynamic_zoom]
+query = { dst = 0x04, cmd = "8434", flags = 0x21, payload = "03000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "4434", prefix = "03000000" }]
+
+# Type 7 (DevGestureParaTypeMirror, "dynamic zoom dir"): which way moving
+# the hands zooms. Reads 0 by default.
+[features.gesture_direction_flip]
+query = { dst = 0x04, cmd = "8434", flags = 0x21, payload = "07000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "4434", prefix = "07000000" }]
+
+# Value is the factor x100 (100..400); the camera takes and returns a float.
+[features.gesture_zoom_factor]
+query = { dst = 0x04, cmd = "8434", flags = 0x21, payload = "08000000", offsets = [0], value = "f32", scale = 100 }
+frames = [{ dst = 0x04, cmd = "4434", prefix = "08000000", value = "f32", divisor = 100 }]
+
+[features.mirror_image]
+status = 19
+short = { id = 0x14 }
+
+# Manual zoom: ISP digital zoom, factor x100 (100..400) after a constant
+# 02000000 (the same command the gesture zoom factor sends). Query 0468
+# returns the current zoom as f32, including zoom from AI tracking.
+[features.zoom]
+query = { dst = 0x04, cmd = "0468", offsets = [0], value = "f32", scale = 100 }
+frames = [{ dst = 0x02, cmd = "4219", prefix = "02000000", value = "u32" }]
+
+# Field of view (SDK cameraSetFovU): short setting 0x04, read at status[17].
+# 0 86°, 1 78°, 2 65°; the camera reports 3 ("none") while a gesture zoom
+# is active. Traced from the SDK and checked on the picture (Tiny 3, 6.6.8.3).
+[features.field_of_view]
+status = 17
+short = { id = 0x04 }
+transient = [3]
+
+# Re-center, as OBSBOT Center's View & Gimbal reset icon does: a query
+# (8438, payload 01) then 0439 with flags 0x05. Writing UVC pan/tilt 0
+# doesn't move the gimbal back after velocity moves.
+[features.gimbal_reset]
+frames = [
+  { dst = 0x04, cmd = "8438", flags = 0x01, payload = "01" },
+  { dst = 0x04, cmd = "0439", flags = 0x05, payload = "" },
+]
+
+# Not bound: view and gimbal reverse (upside-down mounting). The Tiny SE's
+# `843b` was never tested here, and OBSBOT's SDK sends dst 04 `043c` u8
+# (aiSetGimbalYawDirReverseR) for it instead; with that on, joystick moves
+# and the status block didn't change, so it's left out until someone
+# checks it against the picture.
+
+# 0 off, 1 group, 2 human, 3 hand tracking
+# AI mode (AiWorkModeType in OBSBOT's SDK). Besides the Tiny SE's modes, the
+# Tiny 3 takes 4 whiteboard, 5 desk and 7 speech (voice tracking), each
+# echoed at status[24]; 14 (portrait tracking per the SDK) is ignored.
+[features.ai_mode]
+status = 24
+# 6 is AiWorkModeSwitching in OBSBOT's SDK: a mode change in progress.
+transient = [6]
+options = [
+  [0, "Off"],
+  [2, "Human"],
+  [1, "Group"],
+  [3, "Hand Tracking"],
+  [4, "Whiteboard"],
+  [5, "Desk"],
+  [7, "Voice Tracking"],
+]
+short = { id = 0x16, value = "u16" }
+
+# Sleep/resume: ISP u32, 1 sleep, 0 wake. status[2] is 1 while asleep.
+[features.sleep]
+status = 2
+frames = [{ dst = 0x02, cmd = "c2a0", value = "u32" }]
+
+# Tracking control parameters for human targets (SDK aiSetControlParaR /
+# aiGetControlParaR): write dst 04 `4454` with u32 target (0 human), u32
+# parameter, then the value; read with query `8454` (flags 0x21) and the
+# target and parameter as payload. Parameter 5 is the gimbal speed mode
+# (0 super lazy, 1 lazy, 2 slow = the camera's default, 3 fast, 4 crazy),
+# parameter 0 motion mode (fast-moving subjects). Both stored and read
+# back on a Tiny 3 (6.6.8.3); status[36] doesn't follow them.
+[features.tracking_speed]
+query = { dst = 0x04, cmd = "8454", flags = 0x21, payload = "0000000005000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "4454", prefix = "0000000005000000", value = "u32" }]
+
+[features.tracking_motion]
+query = { dst = 0x04, cmd = "8454", flags = 0x21, payload = "0000000000000000", offsets = [0] }
+frames = [{ dst = 0x04, cmd = "4454", prefix = "0000000000000000" }]
+
+# OBSBOT Center's AI lock is host-side: it turns AI tracking and gestures
+# off, and unlocking restores the AI mode (not the gestures).
+[features.ai_lock]
+lock = { off = ["ai_mode", "gesture_control"], restore = ["ai_mode"] }
+
+# Image
+[features.hdr]
+status = 6
+short = { id = 0x01 }
+
+# 0 Global, 1 Face
+[features.auto_focus_mode]
+status = 13
+frames = [{ dst = 0x02, cmd = "0236", value = "u32" }]
+
+# 0 Global, 1 Face
+[features.auto_exposure_mode]
+status = 7
+short = { id = 0x03 }
+
+# UVC backlight compensation 0..18 is -3..+3 EV in 1/3 steps.
+[features.exposure_compensation]
+v4l2 = 0x0098091c
+offset = 9
+scale = 3
+
+# Audio
+[features.mic_during_sleep]
+status = 16
+short = { id = 0x13 }
+
+[features.noise_reduction]
+status = 8
+short = { id = 0x0a }
+
+[features.auto_gain]
+status = 25
+short = { id = 0x17 }
+
+# The camera value is 1 while the microphone is enabled; with 0 it
+# re-enumerates on USB without its audio interface.
+[features.disable_microphone]
+status = 34
+status_mask = 0x10
+short = { id = 0x1c }
+invert = true
+
+[features.pickup_distance]
+status = 34
+status_mask = 0x0f
+short = { id = 0x1b }
+
+# Wireless microphones (Vox SE), two slots: TX1 and TX2. Frames traced from
+# OBSBOT's SDK; the mic commands are addressed to the mics themselves (dst
+# 0x58 TX1, 0x98 TX2). Pairing, found by trying the traced commands: "pair
+# enable" for the slot, then setBlePairingEnable (dst 0x13), then hold the
+# mic's button ~6 s; status[41] then shows the slot online. Verified on
+# TX1 and TX2 (one Vox SE, forgotten in between); the camera switched to the wireless mic and turned
+# auto-select on by itself.
+[features.audio_source]
+status = 40
+status_mask = 0x07
+frames = [{ dst = 0x02, cmd = "4289" }]
+
+[features.audio_auto_select]
+query = { dst = 0x02, cmd = "828a", offsets = [1] }
+frames = [{ dst = 0x02, cmd = "c28a" }]
+
+[features.mic_pair_tx1]
+frames = [
+  { dst = 0x58, cmd = "130c", flags = 0x05, payload = "" },
+  { dst = 0x13, cmd = "0e0c", flags = 0x21, payload = "00" },
+]
+
+[features.mic_pair_tx2]
+frames = [
+  { dst = 0x98, cmd = "130c", flags = 0x05, payload = "" },
+  { dst = 0x13, cmd = "0e0c", flags = 0x21, payload = "00" },
+]
+
+[features.mic_pair_stop]
+frames = [
+  { dst = 0x58, cmd = "530c", flags = 0x05, payload = "" },
+  { dst = 0x98, cmd = "530c", flags = 0x05, payload = "" },
+]
+
+[features.mic_forget_tx1]
+frames = [{ dst = 0x58, cmd = "930e", flags = 0x05, payload = "" }]
+
+[features.mic_forget_tx2]
+frames = [{ dst = 0x98, cmd = "930e", flags = 0x05, payload = "" }]
+
+# Per-mic mute and gain, sent to the mic (dst 0x58 TX1, 0x98 TX2); read back
+# from the mic info query `02c0`: [2] bit 0/1 muted, [5]/[6] gain (i8). The
+# mic stores any gain from -30 to +30 and OBSBOT doesn't publish the range,
+# so the catalog offers -12..+12. Verified on TX1.
+[features.mic_tx1_mute]
+query = { dst = 0x02, cmd = "02c0", offsets = [2], mask = 0x01 }
+frames = [{ dst = 0x58, cmd = "d32d" }]
+
+[features.mic_tx1_gain]
+query = { dst = 0x02, cmd = "02c0", offsets = [5], value = "i8" }
+frames = [{ dst = 0x58, cmd = "532d", value = "u32" }]
+
+[features.mic_tx2_mute]
+query = { dst = 0x02, cmd = "02c0", offsets = [2], mask = 0x02 }
+frames = [{ dst = 0x98, cmd = "d32d" }]
+
+[features.mic_tx2_gain]
+query = { dst = 0x02, cmd = "02c0", offsets = [6], value = "i8" }
+frames = [{ dst = 0x98, cmd = "532d", value = "u32" }]
+
+# Not bound: audio mode (SDK cameraSetAudioModeU, exported but not in the
+# header), short setting 0x22 [source, mode], read back in status[40] bits
+# 3-7 (0 omni, 1 stereo = default, 2 front, 3 back, 4 front and back, 5
+# music). The camera stores it, but speaking in front of it was no quieter
+# in Back than in Front, and the USB audio is mono (L = R).
+
+# Sound-source assisted tracking (SDK cameraSetDoaFindBack): short setting
+# 0x25, status[46] bit 0, on by default. Tested: with Human tracking on and
+# the person out of view, speaking turned the camera ~80 degrees toward
+# them; switched off, it didn't. The DOA range next to it
+# (cameraSetDoaRange, 0x24, bit 1) only takes 0 and 1 and is undocumented,
+# so it's left out.
+[features.sound_tracking]
+status = 46
+status_mask = 0x01
+short = { id = 0x25 }
+
+# Vox SE options (SDK cameraSetTWSFuncR, exported but not in the header):
+# dst 02 `82c0` [function, on/off, i16 parameter], for both mics; read back
+# at mic info [1] bit n. Functions: 0 button, 1 vibration, 2 LED, 3 noise
+# suppression (parameter: level 1-3, at [2]/[3]), 4 auto suspend,
+# 5 shutdown. Tested: the LED went dark and came back; with the button
+# disabled a press no longer switched tracking; with vibration off a press
+# no longer buzzed.
+[features.mic_led]
+query = { dst = 0x02, cmd = "02c0", offsets = [1], mask = 0x04 }
+frames = [{ dst = 0x02, cmd = "82c0", prefix = "02", suffix = "0000" }]
+
+[features.mic_vibration]
+query = { dst = 0x02, cmd = "02c0", offsets = [1], mask = 0x02 }
+frames = [{ dst = 0x02, cmd = "82c0", prefix = "01", suffix = "0000" }]
+
+# Noise suppression (function 3): [03, on/off, level i16]. On/off reads
+# back at mic info [2] bits 2-3 (mic 1, mic 2; both set together), the
+# level at [3]. Switching on sends Medium; the level control then sets it
+# (and switches it on). Tested: steady noise near the mic recorded at RMS
+# 85-88 with it off and 2 at level 3.
+[features.mic_noise_suppression]
+query = { dst = 0x02, cmd = "02c0", offsets = [2], mask = 0x04 }
+frames = [{ dst = 0x02, cmd = "82c0", prefix = "03", suffix = "0200" }]
+
+[features.mic_noise_level]
+query = { dst = 0x02, cmd = "02c0", offsets = [3] }
+frames = [{ dst = 0x02, cmd = "82c0", prefix = "0301", value = "u16" }]
+
+[features.mic_button_enabled]
+query = { dst = 0x02, cmd = "02c0", offsets = [1], mask = 0x01 }
+frames = [{ dst = 0x02, cmd = "82c0", prefix = "00", suffix = "0000" }]
+
+# What a short press of the Vox SE's button does (SDK cameraSetTWSKeyTypeR,
+# for both mics): dst 02 `42c0` u8, read back at mic info [0]. 0 human
+# tracking (default), 1 switch tracking mode, 2 zoom to 1.0x; 3 ("record")
+# triggers a recording in OBSBOT Center on the PC and is left out. Tested: a
+# press with 2 zoomed the camera from 2x to 1x.
+[features.mic_button]
+query = { dst = 0x02, cmd = "02c0", offsets = [0] }
+frames = [{ dst = 0x02, cmd = "42c0" }]
+
+# Voice control (SDK cameraSetAudioCtrlStateU): short setting 0x15, [command,
+# value]. Commands 0-6 switch one voice command each, read back as bit n of
+# status[21]; 100 is the voice zoom (0-100 = 1x-4x, status[22]) and 101 the
+# language (0 Chinese, 1 English, status[20]). Traced from the SDK and read
+# back on a Tiny 3 (6.6.8.3).
+[features.voice_hi_tiny]
+status = 21
+status_mask = 0x01
+short = { id = 0x15, prefix = "00" }
+
+[features.voice_sleep_tiny]
+status = 21
+status_mask = 0x02
+short = { id = 0x15, prefix = "01" }
+
+[features.voice_track_me]
+status = 21
+status_mask = 0x04
+short = { id = 0x15, prefix = "02" }
+
+[features.voice_unlock_me]
+status = 21
+status_mask = 0x08
+short = { id = 0x15, prefix = "03" }
+
+[features.voice_zoom_in]
+status = 21
+status_mask = 0x10
+short = { id = 0x15, prefix = "04" }
+
+[features.voice_zoom_out]
+status = 21
+status_mask = 0x20
+short = { id = 0x15, prefix = "05" }
+
+[features.voice_presets]
+status = 21
+status_mask = 0x40
+short = { id = 0x15, prefix = "06" }
+
+[features.voice_zoom_factor]
+status = 22
+short = { id = 0x15, prefix = "64" }
+
+[features.voice_language]
+status = 20
+short = { id = 0x15, prefix = "65" }
+
+# Device sleep: one i16 setting in seconds, negated while auto sleep is off.
+[features.auto_sleep]
+status = 10
+status_value = "i16"
+short = { id = 0x0b, value = "u16" }
+level = "sign-switch"
+default_level = 30
+
+[features.sleep_time]
+status = 10
+status_value = "i16"
+short = { id = 0x0b, value = "u16" }
+level = "magnitude"
+default_level = 30
+
+[features.sleep_background_mirror]
+status = 29
+short = { id = 0x0e, prefix = "02" }
+
+# Status light. Unlike the Tiny SE, writing 0 keeps the brightness at [33]
+# and clears led_enable at [45]; writing 1..3 sets the brightness and
+# switches it on again. Measured on the camera.
+[features.status_light]
+status = 45
+short = { id = 0x1a }
+level = "switch"
+level_status = 33
+default_level = 2
+
+[features.status_light_brightness]
+status = 33
+short = { id = 0x1a }
+level = "magnitude"
+default_level = 2

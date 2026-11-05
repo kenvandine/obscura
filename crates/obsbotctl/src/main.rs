@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use obsbot_core::transport::uvc_xu;
-use obsbot_core::v4l2::UvcQuery;
+use obsbot_core::transport::v4l2::UvcQuery;
 use obsbot_core::{discover, CameraInfo, Device, FeatureId, FeatureKind};
+#[cfg(all(debug_assertions, unix))]
+use std::io::{BufRead, BufReader};
 
 #[derive(Parser)]
 #[command(version, about = "Control OBSBOT webcams on Linux")]
@@ -37,7 +39,52 @@ enum Command {
     Get { feature: String },
     /// Write one feature: `on`/`off`, a choice label, or a number in display
     /// units (e.g. `zoom 1.5`).
-    Set { feature: String, value: String },
+    Set {
+        feature: String,
+        /// Negative numbers are fine (e.g. `mic_tx1_gain -4`).
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        /// Wait for the camera's status to catch up, then report whether it
+        /// took the new value.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Follow what the camera does: its queued events (target lost/found,
+    /// …) and changes it makes on its own (gestures, voice, auto-sleep).
+    Events {
+        /// Stop after this many seconds (default: run until Ctrl+C).
+        #[arg(long)]
+        seconds: Option<u64>,
+    },
+    /// Share the camera through the virtual camera ("OBSCura Camera"), so
+    /// other apps can use it while OBSCura does. Runs until stopped.
+    Share {
+        /// Picture height: 1080 or 720.
+        #[arg(long, default_value_t = 1080)]
+        size: u32,
+        #[arg(long, default_value_t = 30)]
+        fps: u32,
+        /// The virtual camera's node (default: found by its name).
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
+    /// Wireless microphones (Vox SE): which slots are connected, battery.
+    /// Pair with `set mic_pair_tx1 1`, then hold the mic's button ~6 s.
+    Mics,
+    /// Check OBSBOT's download page for newer firmware (needs network
+    /// access). Only checks; update with OBSBOT Center.
+    Firmware,
+    /// Show the camera's live state (power, AI mode, zoom, stream fps…)
+    /// decoded from its status block.
+    Status {
+        /// Also print the raw status block.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Attach to the GUI's opt-in, debug-only local diagnostics feed.
+    #[cfg(all(debug_assertions, unix))]
+    #[command(subcommand)]
+    DebugFeed(DebugFeedCommand),
     /// List the raw V4L2 controls the driver exposes.
     Controls,
     /// Gimbal presets stored on the camera (slots are numbered from 1).
@@ -59,6 +106,19 @@ enum Command {
     Raw(Raw),
 }
 
+#[cfg(all(debug_assertions, unix))]
+#[derive(Subcommand)]
+enum DebugFeedCommand {
+    /// Follow activity-log entries from a running GUI instance.
+    Listen {
+        /// Print one JSON object per line.
+        #[arg(long)]
+        jsonl: bool,
+    },
+    /// Add a marker for a physical action performed during observation.
+    Mark { text: String },
+}
+
 // Variant names become the subcommands `xu-probe`, `xu-get` and `xu-set`.
 #[allow(clippy::enum_variant_names)]
 #[derive(Subcommand)]
@@ -75,6 +135,8 @@ enum Preset {
     Recall { slot: u32 },
     /// Rename SLOT.
     Rename { slot: u32, name: String },
+    /// Empty SLOT (Tiny 3).
+    Delete { slot: u32 },
 }
 
 /// Converts a 1-based slot number from the command line to the camera's.
@@ -112,6 +174,12 @@ enum Raw {
         dst: String,
         /// Command ID as captured, e.g. `0401`.
         cmd: String,
+        /// Frame flags, e.g. `21` for queries that take a slot or index.
+        #[arg(long, default_value = "01")]
+        flags: String,
+        /// Query payload as hex bytes, e.g. `00000000`.
+        #[arg(long, default_value = "")]
+        payload: String,
     },
 }
 
@@ -272,7 +340,11 @@ fn main() -> Result<()> {
                 ),
             }
         }
-        Command::Set { feature, value } => {
+        Command::Set {
+            feature,
+            value,
+            check,
+        } => {
             let dev = open(&cli)?;
             let id = feature_id(feature)?;
             let kind = dev.feature(id).kind;
@@ -282,12 +354,142 @@ fn main() -> Result<()> {
                     describe_kind(&kind)
                 )
             })?;
+            let before = obsbot_core::log::since(0).last().map_or(0, |e| e.seq);
             let s = dev.set(id, raw)?;
             println!(
                 "{} = {}",
                 feature,
                 s.value.map_or("?".into(), |v| s.kind.format(v))
             );
+            if *check {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                dev.feature(id);
+                let warnings: Vec<_> = obsbot_core::log::since(before)
+                    .into_iter()
+                    .filter(|e| e.level == obsbot_core::log::Level::Warn)
+                    .collect();
+                if warnings.is_empty() {
+                    println!("checked: the camera took it");
+                }
+                for w in warnings {
+                    eprintln!("warning: {}", w.message);
+                }
+            }
+        }
+        Command::Share { size, fps, to } => share(&cli, *size, *fps, to.clone())?,
+        Command::Events { seconds } => {
+            let dev = open(&cli)?;
+            if dev.live_status().is_none() {
+                bail!("{} has no vendor status block", dev.profile.name);
+            }
+            eprintln!("Following {} (Ctrl+C to stop)…", dev.profile.name);
+            let start = std::time::Instant::now();
+            let mut last = obsbot_core::log::since(0).last().map_or(0, |e| e.seq);
+            while seconds.is_none_or(|s| start.elapsed().as_secs() < s) {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                dev.live_status();
+                for e in obsbot_core::log::since(last) {
+                    last = e.seq;
+                    if e.level != obsbot_core::log::Level::Trace {
+                        let secs = e.time_ms / 1000;
+                        println!(
+                            "{:02}:{:02}:{:02} UTC  {}",
+                            (secs / 3600) % 24,
+                            (secs / 60) % 60,
+                            secs % 60,
+                            e.message
+                        );
+                    }
+                }
+            }
+        }
+        #[cfg(all(debug_assertions, unix))]
+        Command::DebugFeed(DebugFeedCommand::Listen { jsonl }) => {
+            let stream = obsbot_core::debug_feed::connect()
+                .context("connecting to the debug feed; start the GUI with OBSCURA_DEBUG_FEED=1")?;
+            eprintln!("Connected to the OBSCura debug feed (Ctrl+C to stop)…");
+            for line in BufReader::new(stream).lines() {
+                let line = line.context("reading from the debug feed")?;
+                if *jsonl {
+                    println!("{line}");
+                } else {
+                    let message: obsbot_core::debug_feed::Message =
+                        serde_json::from_str(&line).context("decoding a debug-feed entry")?;
+                    match message {
+                        obsbot_core::debug_feed::Message::Entry { entry } => {
+                            let secs = entry.time_ms / 1000;
+                            println!(
+                                "{:02}:{:02}:{:02} UTC  [{:?}] {}",
+                                (secs / 3600) % 24,
+                                (secs / 60) % 60,
+                                secs % 60,
+                                entry.level,
+                                entry.message
+                            );
+                        }
+                        obsbot_core::debug_feed::Message::Marker { .. } => {
+                            bail!("received an unexpected marker request from the debug feed");
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(all(debug_assertions, unix))]
+        Command::DebugFeed(DebugFeedCommand::Mark { text }) => {
+            obsbot_core::debug_feed::send_marker(text)
+                .context("sending marker to the debug feed")?;
+            println!("Marker added.");
+        }
+        Command::Mics => {
+            let dev = open(&cli)?;
+            let Some(mics) = dev.wireless_mics() else {
+                bail!("{} has no wireless microphone receiver", dev.profile.name);
+            };
+            for m in mics {
+                if m.connected {
+                    let battery = m.battery.map_or("?".into(), |b| format!("{b}%"));
+                    println!(
+                        "TX{}: connected, battery {battery}{}{}",
+                        m.slot,
+                        if m.charging { ", charging" } else { "" },
+                        if m.muted { ", muted" } else { "" }
+                    );
+                } else {
+                    println!("TX{}: not connected", m.slot);
+                }
+            }
+        }
+        Command::Firmware => {
+            let dev = open(&cli)?;
+            let c = dev.check_firmware_update().map_err(|e| anyhow!(e))?;
+            println!("Camera firmware:  {}", c.current);
+            println!("Latest firmware:  {}", c.latest);
+            if c.update_available {
+                println!("An update is available. Install it with OBSBOT Center (Windows or");
+                println!("macOS): {}", c.page);
+            } else {
+                println!("The camera is up to date.");
+            }
+        }
+        Command::Status { raw } => {
+            let dev = open(&cli)?;
+            let Some(st) = dev.live_status() else {
+                bail!("{} has no vendor status block", dev.profile.name);
+            };
+            println!("Power:        {}", st.power);
+            println!(
+                "AI mode:      {} (sub-mode {})",
+                st.ai_mode_label, st.ai_sub_mode
+            );
+            println!("Zoom:         {:.2}x", st.zoom);
+            println!("FOV:          {}", st.fov.unwrap_or("-"));
+            println!("Stream fps:   {}", st.fps);
+            println!("Light level:  {}", st.light_level);
+            println!("Event count:  {}", st.event_count);
+            println!("Wireless mic: {}", st.mic);
+            if *raw {
+                println!("Raw:          {}", st.raw);
+            }
         }
         Command::Preset(p) => {
             let dev = open(&cli)?;
@@ -307,6 +509,7 @@ fn main() -> Result<()> {
                 }
                 Preset::Recall { slot } => dev.recall_preset(slot_index(*slot)?)?,
                 Preset::Rename { slot, name } => dev.rename_preset(slot_index(*slot)?, name)?,
+                Preset::Delete { slot } => dev.delete_preset(slot_index(*slot)?)?,
             }
         }
         Command::Gimbal { right, up, ms } => {
@@ -390,14 +593,26 @@ fn main() -> Result<()> {
                     uvc_xu::set(node, *unit, *selector, &bytes)?;
                     println!("ok");
                 }
-                Raw::Query { dst, cmd } => {
+                Raw::Query {
+                    dst,
+                    cmd,
+                    flags,
+                    payload,
+                } => {
                     let [dst] = parse_hex(dst)?[..] else {
                         bail!("dst must be one byte, e.g. 04");
                     };
                     let cmd: [u8; 2] = parse_hex(cmd)?
                         .try_into()
                         .map_err(|_| anyhow!("cmd must be two bytes, e.g. 0401"))?;
-                    let payload = dev.query(dst, cmd)?;
+                    let [flags] = parse_hex(flags)?[..] else {
+                        bail!("flags must be one byte, e.g. 21");
+                    };
+                    let Some(payload) = dev.query_with(dst, cmd, flags, &parse_hex(payload)?)?
+                    else {
+                        println!("(nothing there)");
+                        return Ok(());
+                    };
                     println!(
                         "{}",
                         payload
@@ -411,4 +626,85 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Feeds the virtual camera from the real one until stopped (SIGTERM, as
+/// sent by the app or the tray). Keeps trying while the camera is busy,
+/// asleep or unplugged, so the feed resumes on its own.
+fn share(cli: &Cli, size: u32, fps: u32, to: Option<PathBuf>) -> Result<()> {
+    use obsbot_core::companion::{self, Role};
+    use obsbot_core::preview::{self, PreviewConfig};
+    use obsbot_core::virtualcam;
+    use std::cell::RefCell;
+    use std::sync::atomic::AtomicBool;
+
+    let width = match size {
+        1080 => 1920,
+        720 => 1280,
+        _ => bail!("--size must be 1080 or 720"),
+    };
+    let Some(target) = to.or_else(virtualcam::find) else {
+        bail!(
+            "the virtual camera \"{}\" isn't set up. Load it with:\n  {}\nand to load it at every boot:\n  {}\n  {}",
+            virtualcam::LABEL,
+            virtualcam::SETUP[0],
+            virtualcam::SETUP[1],
+            virtualcam::SETUP[2]
+        );
+    };
+    let camera = pick_camera(cli)?;
+    if companion::running(Role::Share).is_some() {
+        bail!("the camera is already being shared");
+    }
+    companion::register(Role::Share).context("recording the share process")?;
+    // OBSCura's preview reads the frames here, leaving the virtual camera's
+    // single streaming slot to other apps.
+    let server = virtualcam::FrameServer::bind(&virtualcam::socket_path())
+        .context("opening the preview socket")?;
+    eprintln!(
+        "Sharing {} as \"{}\" ({}) — stop with Ctrl+C",
+        camera.product.as_deref().unwrap_or(&camera.name),
+        virtualcam::LABEL,
+        target.display()
+    );
+
+    let stop = AtomicBool::new(false);
+    let config = PreviewConfig {
+        width,
+        height: size,
+        fps,
+    };
+    loop {
+        let writer = RefCell::new(None);
+        let result = preview::run(
+            &camera.path,
+            config,
+            &stop,
+            |fmt| match virtualcam::Writer::open(&target, fmt.width, fmt.height) {
+                Ok(w) => {
+                    eprintln!("{}x{} at {} fps", fmt.width, fmt.height, fmt.fps);
+                    server.set_format(fmt);
+                    *writer.borrow_mut() = Some(w);
+                }
+                Err(e) => eprintln!("can't open {}: {e}", target.display()),
+            },
+            |jpeg| match writer.borrow_mut().as_mut() {
+                Some(w) => match w.write(jpeg) {
+                    Ok(()) => {
+                        server.send(jpeg);
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("writing to {}: {e}", target.display());
+                        false
+                    }
+                },
+                None => false,
+            },
+        );
+        if let Err(e) = result {
+            eprintln!("camera: {e}; retrying");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
 }

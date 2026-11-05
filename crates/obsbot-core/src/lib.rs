@@ -6,18 +6,24 @@
 //! Extension Unit queries.
 
 pub mod companion;
+#[cfg(all(debug_assertions, unix))]
+pub mod debug_feed;
 pub mod device;
 pub mod discovery;
 pub mod error;
 pub mod features;
+pub mod firmware;
+pub mod log;
 pub mod preview;
 pub mod profile;
-pub mod protocol;
 pub mod transport;
-pub mod v4l2;
+pub mod vendor;
+pub mod virtualcam;
 
 pub use device::{Device, FeatureState, FirmwareInfo};
 pub use discovery::{discover, CameraInfo};
 pub use error::{Error, Result};
 pub use features::{FeatureId, FeatureKind};
 pub use profile::DeviceProfile;
+pub use vendor::mics::MicSlot;
+pub use vendor::status::LiveStatus;

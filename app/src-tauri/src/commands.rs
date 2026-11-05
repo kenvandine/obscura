@@ -3,9 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use obsbot_core::{discover, CameraInfo, Device, FeatureId, FeatureState, FirmwareInfo};
+use obsbot_core::{
+    discover, log, CameraInfo, Device, FeatureId, FeatureState, FirmwareInfo, LiveStatus, MicSlot,
+};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 pub struct AppState(pub Mutex<Option<Device>>);
 
@@ -27,6 +29,10 @@ pub struct Snapshot {
     /// Camera-side gimbal presets by slot (`None` = empty); empty if the
     /// camera has none.
     presets: Vec<Option<String>>,
+    /// Preset names can be read back, so renaming is useful.
+    preset_rename: bool,
+    /// Preset slots can be emptied.
+    preset_delete: bool,
     features: Vec<FeatureState>,
 }
 
@@ -82,6 +88,12 @@ pub fn open_camera(state: State<AppState>, path: PathBuf) -> CmdResult<Snapshot>
         .find(|c| c.path == path)
         .ok_or_else(|| format!("{} is no longer connected", path.display()))?;
     let device = Device::open_auto(info).map_err(err)?;
+    log::info(format!(
+        "Opened {} ({}) with profile {}",
+        device.info.name,
+        device.info.path.display(),
+        device.profile.id
+    ));
     let snapshot = Snapshot {
         info: device.info.clone(),
         profile_id: device.profile.id.clone(),
@@ -89,6 +101,8 @@ pub fn open_camera(state: State<AppState>, path: PathBuf) -> CmdResult<Snapshot>
         gimbal_velocity: device.has_gimbal_velocity(),
         firmware: device.firmware_info(),
         presets: device.presets().unwrap_or_default(),
+        preset_rename: device.preset_names_readable(),
+        preset_delete: device.preset_delete_supported(),
         features: device.read_all(),
     };
     *state.0.lock().unwrap() = Some(device);
@@ -103,6 +117,70 @@ pub fn get_features(state: State<AppState>) -> CmdResult<Vec<FeatureState>> {
     // the camera disappearing altogether (ENODEV after unplug or reboot).
     device.node().capability().map_err(err)?;
     Ok(device.read_all())
+}
+
+/// Activity log entries newer than `since` (0 for all), oldest first.
+#[tauri::command]
+pub fn get_log(since: u64) -> Vec<log::Entry> {
+    log::since(since)
+}
+
+/// Compares the camera's firmware with the latest on OBSBOT's download
+/// page. Runs off the main thread, and holds the camera lock only to read
+/// the version, so a slow network doesn't block the controls.
+#[tauri::command(async)]
+pub fn check_firmware_update(
+    state: State<'_, AppState>,
+) -> CmdResult<obsbot_core::firmware::UpdateCheck> {
+    let (source, current, name) = {
+        let guard = state.0.lock().unwrap();
+        let device = guard.as_ref().ok_or("no camera open")?;
+        (
+            device.profile.firmware.clone(),
+            device.firmware_info().map(|f| f.version),
+            device.profile.name.clone(),
+        )
+    };
+    let source = source.ok_or_else(|| format!("No firmware download page is known for {name}"))?;
+    let current = current.ok_or("The camera didn't report its firmware version")?;
+    obsbot_core::firmware::check(&source, &current)
+}
+
+/// Opens the Diagnostics window, or closes it when it's open (Ctrl+Shift+D
+/// in the main window). Async: creating a window from a sync command can
+/// deadlock.
+#[tauri::command(async)]
+pub fn toggle_diagnostics(app: AppHandle) -> CmdResult<()> {
+    if let Some(window) = app.get_webview_window("diagnostics") {
+        return window.close().map_err(err);
+    }
+    WebviewWindowBuilder::new(
+        &app,
+        "diagnostics",
+        WebviewUrl::App("index.html#diagnostics".into()),
+    )
+    .title("OBSCura Diagnostics")
+    .inner_size(440.0, 620.0)
+    .min_inner_size(320.0, 300.0)
+    .build()
+    .map(|_| ())
+    .map_err(err)
+}
+
+/// Wireless microphone slots (`None` if the camera has no receiver).
+#[tauri::command]
+pub fn wireless_mics(state: State<AppState>) -> CmdResult<Option<Vec<MicSlot>>> {
+    let guard = state.0.lock().unwrap();
+    let device = guard.as_ref().ok_or("no camera open")?;
+    Ok(device.wireless_mics())
+}
+
+/// The camera's live state from its status block (`None` without one).
+#[tauri::command]
+pub fn live_status(state: State<AppState>) -> CmdResult<Option<LiveStatus>> {
+    let guard = state.0.lock().unwrap();
+    let device = guard.as_ref().ok_or("no camera open")?;
+    Ok(device.live_status())
 }
 
 /// Writes one feature and returns every feature, since a write can change
@@ -142,6 +220,15 @@ pub fn rename_preset(
     let guard = state.0.lock().unwrap();
     let device = guard.as_ref().ok_or("no camera open")?;
     device.rename_preset(slot, &name).map_err(err)?;
+    device.presets().map_err(err)
+}
+
+/// Empties a preset slot; returns the updated preset names.
+#[tauri::command]
+pub fn delete_preset(state: State<AppState>, slot: u32) -> CmdResult<Vec<Option<String>>> {
+    let guard = state.0.lock().unwrap();
+    let device = guard.as_ref().ok_or("no camera open")?;
+    device.delete_preset(slot).map_err(err)?;
     device.presets().map_err(err)
 }
 

@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::features::FeatureId;
-use crate::protocol::ValueEncoding;
+use crate::vendor::protocol::ValueEncoding;
 
 /// USB vendor IDs used by OBSBOT (Remo Tech). To be confirmed against the
 /// Tiny SE's descriptors from the captures.
@@ -24,6 +24,11 @@ const BUILTIN: &[(&str, &str)] = &[
         include_str!("../../../profiles/tiny-se.toml"),
     ),
     ("tiny-2.toml", include_str!("../../../profiles/tiny-2.toml")),
+    ("tiny-3.toml", include_str!("../../../profiles/tiny-3.toml")),
+    (
+        "tiny-3-lite.toml",
+        include_str!("../../../profiles/tiny-3-lite.toml"),
+    ),
     (
         "tiny-2-lite.toml",
         include_str!("../../../profiles/tiny-2-lite.toml"),
@@ -124,6 +129,9 @@ pub struct FrameSpec {
     pub prefix: Vec<u8>,
     #[serde(default = "u8_enc")]
     pub value: ValueEncoding,
+    /// Constant bytes after the value.
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub suffix: Vec<u8>,
     /// For `f32`: the float sent is `value / divisor`.
     #[serde(default = "one")]
     pub divisor: i64,
@@ -171,17 +179,25 @@ pub enum Level {
 }
 
 /// Readback through a framed query (selector 2). Responses are shared by
-/// every feature reading the same query.
+/// every feature reading the same query and payload.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRead {
     pub dst: u8,
     #[serde(deserialize_with = "hex_cmd")]
     pub cmd: [u8; 2],
+    /// Frame flags other than a plain query (0x01), e.g. 0x21.
+    pub flags: Option<u8>,
+    /// Payload sent with the query, e.g. which setting to read.
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub payload: Vec<u8>,
     /// Response offset holding the value. With several, the feature is a
     /// toggle that is on when any of the bytes is non-zero.
     pub offsets: Vec<usize>,
-    /// Layout of a single value: `u8` (default) or `f32`.
+    /// Bits of a single byte holding the value (shifted down), e.g. one
+    /// microphone's mute bit.
+    pub mask: Option<u8>,
+    /// Layout of a single value: `u8` (default), `i8` or `f32`.
     #[serde(default = "u8_enc")]
     pub value: ValueEncoding,
     /// Feature value = value x scale (e.g. zoom factor x10 -> x100).
@@ -215,6 +231,19 @@ pub struct VendorBinding {
     pub level: Option<Level>,
     /// The level assumed before one has been seen (see `level`).
     pub default_level: Option<i64>,
+    /// Status byte holding the level, for cameras that keep it apart from
+    /// the switch (the Tiny 3's status light: brightness at 33, on/off at
+    /// 45). Switching on writes the level found there.
+    pub level_status: Option<usize>,
+    /// Choice options replacing the catalog's, for models with other values
+    /// (e.g. the Tiny 3's extra AI modes), as `[value, label]` pairs.
+    #[serde(default)]
+    pub options: Vec<(i64, String)>,
+    /// Raw status values the camera reports while a change is in progress
+    /// (e.g. AI mode 6, "switching"); the last settled value is shown
+    /// instead.
+    #[serde(default)]
+    pub transient: Vec<i64>,
 }
 
 /// A host-side lock (OBSBOT Center's AI lock): locking saves `restore`
@@ -256,6 +285,20 @@ pub struct GimbalVelocity {
 #[serde(deny_unknown_fields)]
 pub struct Presets {
     pub slots: u32,
+    /// How presets are stored and listed (see `docs/reference/protocol.md`).
+    #[serde(default)]
+    pub format: PresetFormat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresetFormat {
+    /// Tiny SE: angles and zoom as f32, names readable (`043b`).
+    #[default]
+    F32,
+    /// Tiny 3: angles and zoom as int16 x 100, slots listed by `043d`;
+    /// names can be written but not read back.
+    I16,
 }
 
 fn one_f() -> f32 {
@@ -269,6 +312,31 @@ pub enum Binding {
     V4l2(V4l2Binding),
     Vendor(VendorBinding),
     Lock(LockBinding),
+    Alsa(AlsaBinding),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusLayout {
+    /// `CameraStatus::tiny` in OBSBOT's SDK; see `vendor::status`.
+    Tiny,
+}
+
+/// A control of the camera's USB audio, through its ALSA mixer (see
+/// `transport::audio`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlsaBinding {
+    pub alsa: AlsaControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AlsaControl {
+    /// Capture level in dB.
+    CaptureVolume,
+    /// Capture on/off.
+    CaptureSwitch,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -277,8 +345,15 @@ pub struct DeviceProfile {
     pub name: String,
     #[serde(default, rename = "match")]
     pub matches: Vec<UsbMatch>,
-    /// Profile whose features this one starts from.
+    /// Profile this one starts from: everything it has (resolved through
+    /// its own parents) unless this profile sets it, except `match`.
     pub inherits: Option<String>,
+    /// Inherited parts to leave out: feature ids, or `presets`,
+    /// `gimbal_velocity`, `firmware`, `status_layout`, `system_info`,
+    /// `event_queue`, `wireless_mics` (e.g. the Meet 2 drops the Tiny SE's
+    /// gimbal).
+    #[serde(default)]
+    pub drop: Vec<String>,
     /// Vendor gimbal velocity command, used for joystick control.
     pub gimbal_velocity: Option<GimbalVelocity>,
     /// Whether the camera answers the system module's firmware version and
@@ -287,6 +362,20 @@ pub struct DeviceProfile {
     pub system_info: bool,
     /// Camera-side gimbal presets.
     pub presets: Option<Presets>,
+    /// Where OBSBOT publishes this model's latest firmware.
+    pub firmware: Option<crate::firmware::FirmwareSource>,
+    /// Layout of the selector 6 status block, for the live status, logging
+    /// what the camera changes on its own, and the wireless mic state. Only
+    /// `tiny` (OBSBOT SDK `CameraStatus::tiny`) is known.
+    pub status_layout: Option<StatusLayout>,
+    /// Whether the camera's event queue (status[43], query `021d`) may be
+    /// read: verified per model, since unknown queries can hang a camera.
+    #[serde(default)]
+    pub event_queue: bool,
+    /// Whether the camera has a receiver for OBSBOT's wireless microphones
+    /// (Vox SE, two slots), read with query `02c0`.
+    #[serde(default)]
+    pub wireless_mics: bool,
     #[serde(default)]
     pub features: BTreeMap<FeatureId, Binding>,
 }
@@ -304,29 +393,50 @@ impl DeviceProfile {
             .iter()
             .map(|(name, text)| Self::parse(name, text).expect("builtin profile must parse"))
             .collect();
-        parsed
-            .iter()
-            .map(|p| {
-                let mut p = p.clone();
-                if let Some(parent) = p
-                    .inherits
-                    .as_ref()
-                    .and_then(|id| parsed.iter().find(|q| &q.id == id))
-                {
-                    p.system_info |= parent.system_info;
-                    if p.presets.is_none() {
-                        p.presets = parent.presets.clone();
-                    }
-                    if p.gimbal_velocity.is_none() {
-                        p.gimbal_velocity = parent.gimbal_velocity.clone();
-                    }
-                    for (id, b) in &parent.features {
-                        p.features.entry(*id).or_insert_with(|| b.clone());
-                    }
+        parsed.iter().map(|p| p.resolve(&parsed, 0)).collect()
+    }
+
+    /// This profile with everything it inherits filled in (see `inherits`
+    /// and `drop`). Panics on an unknown parent or a loop: built-in
+    /// profiles are checked by the tests.
+    fn resolve(&self, all: &[DeviceProfile], depth: usize) -> DeviceProfile {
+        assert!(depth < 8, "profile inheritance loop at `{}`", self.id);
+        let mut p = self.clone();
+        if let Some(parent) = &self.inherits {
+            let base = all
+                .iter()
+                .find(|q| &q.id == parent)
+                .unwrap_or_else(|| panic!("profile `{}`: unknown parent `{parent}`", self.id))
+                .resolve(all, depth + 1);
+            p.system_info |= base.system_info;
+            p.event_queue |= base.event_queue;
+            p.wireless_mics |= base.wireless_mics;
+            p.presets = p.presets.or(base.presets);
+            p.gimbal_velocity = p.gimbal_velocity.or(base.gimbal_velocity);
+            p.firmware = p.firmware.or(base.firmware);
+            p.status_layout = p.status_layout.or(base.status_layout);
+            for (id, b) in base.features {
+                p.features.entry(id).or_insert(b);
+            }
+        }
+        for name in &self.drop {
+            match name.as_str() {
+                "presets" => p.presets = None,
+                "gimbal_velocity" => p.gimbal_velocity = None,
+                "firmware" => p.firmware = None,
+                "status_layout" => p.status_layout = None,
+                "system_info" => p.system_info = false,
+                "event_queue" => p.event_queue = false,
+                "wireless_mics" => p.wireless_mics = false,
+                feature => {
+                    let id = FeatureId::from_name(feature).unwrap_or_else(|| {
+                        panic!("profile `{}`: can't drop unknown `{feature}`", self.id)
+                    });
+                    p.features.remove(&id);
                 }
-                p
-            })
-            .collect()
+            }
+        }
+        p
     }
 
     /// The generic profile applies standard UVC controls to any camera.
@@ -390,7 +500,7 @@ mod tests {
 
     #[test]
     fn tiny_se_bindings_match_captures() {
-        use crate::protocol::{encode_short, encode_value};
+        use crate::vendor::protocol::{encode_short, encode_value};
         let p = DeviceProfile::for_usb(0x3564, 0xfeff);
         assert!(p.system_info);
         let short = |id: FeatureId, value: i64| {
@@ -452,6 +562,73 @@ mod tests {
             p.features[&FeatureId::MirrorImage],
             Binding::Vendor(_)
         ));
+    }
+
+    #[test]
+    fn tiny_3_matches_by_product_id() {
+        let p = DeviceProfile::for_usb(0x3564, 0xff02);
+        assert_eq!(p.id, "tiny-3");
+        let presets = p.presets.as_ref().expect("Tiny 3 presets");
+        assert_eq!((presets.slots, presets.format), (3, PresetFormat::I16));
+        assert!(p.gimbal_velocity.is_some());
+        assert_eq!(p.firmware.as_ref().map(|f| f.key.as_str()), Some("tiny3"));
+        assert!(p.event_queue);
+        assert_eq!(p.status_layout, Some(StatusLayout::Tiny));
+        assert!(p.wireless_mics);
+        let Binding::Vendor(ai) = &p.features[&FeatureId::AiMode] else {
+            panic!("AI mode is not a vendor binding");
+        };
+        assert!(ai.options.contains(&(5, "Desk".to_string())));
+        assert_eq!(ai.transient, [6]);
+        let Binding::Vendor(b) = &p.features[&FeatureId::GestureZoom] else {
+            panic!("gesture zoom is not a vendor binding");
+        };
+        let q = b.query.as_ref().unwrap();
+        assert_eq!(
+            (q.flags, q.payload.as_slice()),
+            (Some(0x21), &[2, 0, 0, 0][..])
+        );
+        // Direction flip is gesture setting type 7 on the Tiny 3.
+        let Binding::Vendor(flip) = &p.features[&FeatureId::GestureDirectionFlip] else {
+            panic!("direction flip is not a vendor binding");
+        };
+        assert_eq!(
+            flip.query.as_ref().unwrap().payload.as_slice(),
+            &[7, 0, 0, 0][..]
+        );
+        assert!(matches!(
+            p.features[&FeatureId::MirrorImage],
+            Binding::Vendor(_)
+        ));
+    }
+
+    #[test]
+    fn inheritance_is_recursive_and_drops() {
+        // tiny-3-lite -> tiny-3 -> generic-uvc
+        let lite = DeviceProfile::for_usb(0x3564, 0xff04);
+        assert!(matches!(
+            lite.features[&FeatureId::Contrast],
+            Binding::V4l2(_)
+        ));
+        assert!(lite.features.contains_key(&FeatureId::GestureControl));
+        // meet-se -> meet-2 (drops the gimbal) -> tiny-se
+        let meet_se = DeviceProfile::for_usb(0x3564, 0xfefe);
+        assert!(meet_se.presets.is_none() && meet_se.gimbal_velocity.is_none());
+        assert!(meet_se.features.contains_key(&FeatureId::MirrorImage));
+        assert_eq!(meet_se.status_layout, Some(StatusLayout::Tiny));
+        assert_eq!(DeviceProfile::for_usb(0x1234, 0x5678).status_layout, None);
+        assert!(!meet_se.features.contains_key(&FeatureId::GimbalReset));
+    }
+
+    #[test]
+    fn tiny_3_lite_matches_by_product_id() {
+        let p = DeviceProfile::for_usb(0x3564, 0xff04);
+        assert_eq!(p.id, "tiny-3-lite");
+        assert!(p.wireless_mics);
+        assert_eq!(
+            p.firmware.as_ref().map(|f| f.key.as_str()),
+            Some("tiny3lite")
+        );
     }
 
     #[test]

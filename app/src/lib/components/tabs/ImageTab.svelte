@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { device } from "../device.svelte";
-  import Card from "./Card.svelte";
-  import Feature from "./Feature.svelte";
-  import Joystick from "./Joystick.svelte";
-  import Segmented from "./Segmented.svelte";
-  import Icon from "./Icon.svelte";
+  import { device } from "../../device.svelte";
+  import Card from "../ui/Card.svelte";
+  import Feature from "../controls/Feature.svelte";
+  import AutoManual from "../controls/AutoManual.svelte";
+  import Joystick from "../ui/Joystick.svelte";
+  import Segmented from "../ui/Segmented.svelte";
+  import Icon from "../ui/Icon.svelte";
 
   // Gimbal speed only scales joystick moves; OBSBOT Center sends nothing to
   // the camera for it. Remembered per machine.
@@ -75,12 +76,6 @@
 
   const IMAGE = ["brightness", "contrast", "saturation", "sharpness", "hue"];
 
-  /** Show a dependent control when its parent is in `state`, or when the
-   * parent is unsupported (so the full layout is still visible). */
-  function when(parent: string, state: boolean): boolean {
-    return !device.supported(parent) || device.on(parent) === state;
-  }
-
   const gimbalSupported = $derived(
     device.gimbalVelocity || device.supported("pan") || device.supported("tilt"),
   );
@@ -133,9 +128,16 @@
             <button class="ghost icon" title="Save the current view to {name}" onclick={() => device.savePreset(slot, name)}>
               <Icon name="target" size={14} />
             </button>
-            <button class="ghost icon" title="Rename" onclick={() => startRename(slot)}>
-              <Icon name="pencil" size={14} />
-            </button>
+            {#if device.presetRename}
+              <button class="ghost icon" title="Rename" onclick={() => startRename(slot)}>
+                <Icon name="pencil" size={14} />
+              </button>
+            {/if}
+            {#if device.presetDelete}
+              <button class="ghost icon" title="Delete {name}" onclick={() => device.deletePreset(slot)}>
+                <Icon name="trash" size={14} />
+              </button>
+            {/if}
           </div>
         {/if}
       {/each}
@@ -154,25 +156,43 @@
       <Joystick disabled={!gimbalSupported} onmove={joystick} onrelease={joystickRelease} />
     </div>
     <Feature id="zoom" />
+    <Feature id="field_of_view" hideUnsupported />
+    <Feature id="preset_speed" variant="select" hideUnsupported />
+    <Feature id="pan_reverse" description="Turns the joystick's left and right around." hideUnsupported />
   </Card>
+
+  {#if device.supported("tracking_speed") || device.supported("tracking_motion") || device.supported("sound_tracking")}
+    <Card title="Tracking">
+      <Feature id="tracking_speed" variant="select" hideUnsupported />
+      <Feature
+        id="tracking_motion"
+        description="For fast-moving subjects."
+        hideUnsupported
+      />
+      <Feature
+        id="sound_tracking"
+        description="Turn toward a voice when the tracked person is out of view."
+        hideUnsupported
+      />
+    </Card>
+  {/if}
 
   <Card title="Image Adj.">
     <Feature id="hdr" />
-    <Feature id="auto_focus" />
-    {#if when("auto_focus", true)}<Feature id="auto_focus_mode" />{/if}
-    {#if when("auto_focus", false)}<Feature id="focus" hideUnsupported={device.supported("auto_focus")} />{/if}
-    <Feature id="auto_exposure" />
-    {#if when("auto_exposure", true)}
-      <Feature id="auto_exposure_mode" label="Auto Exposure Mode" />
-      <Feature id="exposure_compensation" />
-    {/if}
-    {#if when("auto_exposure", false)}
-      <Feature id="exposure" hideUnsupported={device.supported("auto_exposure")} />
-      <Feature id="gain" hideUnsupported />
-    {/if}
+    <AutoManual label="Focus" autoId="auto_focus" auto={["auto_focus_mode"]} manual={["focus"]} />
+    <AutoManual
+      label="Exposure"
+      autoId="auto_exposure"
+      auto={["auto_exposure_mode", "exposure_compensation"]}
+      manual={["exposure", "gain"]}
+    />
     <Feature id="anti_flicker" />
-    <Feature id="auto_white_balance" />
-    <Feature id="white_balance_temperature" />
+    <AutoManual
+      label="White Balance"
+      autoId="auto_white_balance"
+      manual={["white_balance_temperature"]}
+      autoNote="The camera adjusts the colour temperature by itself."
+    />
   </Card>
 
   <Card title="Image" onreset={() => device.resetToDefault(IMAGE)}>

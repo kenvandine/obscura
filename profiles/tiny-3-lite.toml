@@ -1,0 +1,25 @@
+# OBSBOT Tiny 3 Lite (3564:ff04).
+#
+# UNVERIFIED on this model: inherits tiny-3.toml (see its notes for what was
+# measured on a Tiny 3). The two share OBSBOT's SDK status layout and
+# wireless mic support ("for tiny3, tiny3Lite"), and OBSBOT sells the Vox SE
+# for both. joshualambert/obsbot-tiny3-linux verified on a Tiny 3 Lite
+# (firmware 0510): the same Extension Unit and status block, the AI mode
+# short setting, sleep/wake, re-center, HDR and the field of view. Gestures,
+# the extra AI modes, the event queue and the mic commands are assumed. If
+# you have a Tiny 3 Lite, please check with `obsbotctl dump`/`status` and
+# correct this file; see "Adding support for another camera" in README.md
+# (or the add-obsbot-camera Claude Code skill).
+
+id = "tiny-3-lite"
+name = "OBSBOT Tiny 3 Lite"
+inherits = "tiny-3"
+
+[[match]]
+vendor_id = 0x3564
+product_id = 0xff04
+
+# Its own entry on the Tiny 3 series download page.
+[firmware]
+page = "https://www.obsbot.com/download/obsbot-tiny-3-series"
+key = "tiny3lite"

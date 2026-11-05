@@ -1,5 +1,5 @@
 // Reactive app state: cameras, the open device and its features.
-import { api, type CameraInfo, type FeatureState, type Snapshot } from "./api";
+import { api, type CameraInfo, type FeatureState, type MicSlot, type Snapshot } from "./api";
 
 const RANGE_DEBOUNCE_MS = 60;
 /** OBSBOT Center polls the camera's status every ~2 s; do the same so
@@ -13,9 +13,15 @@ class DeviceStore {
   firmware = $state<Snapshot["firmware"]>(null);
   /** Camera-side gimbal presets by slot; null for an empty slot. */
   presets = $state<(string | null)[]>([]);
+  /** Preset names can be read back (renaming is useful). */
+  presetRename = $state(true);
+  /** Preset slots can be emptied. */
+  presetDelete = $state(false);
   /** Joystick drives the gimbal by velocity rather than absolute nudges. */
   gimbalVelocity = $state(false);
   features = $state<Record<string, FeatureState>>({});
+  /** Wireless microphone slots (Vox SE); null if the camera has no receiver. */
+  mics = $state<MicSlot[] | null>(null);
   error = $state<string | null>(null);
 
   #timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -61,15 +67,26 @@ class DeviceStore {
       }
       const list = await api.getFeatures();
       if (!this.#busy) this.#apply(list);
+      await this.refreshMics();
     } catch {
       // The camera went away (unplugged or rebooting); wait for it.
       this.current = null;
       this.presets = [];
+      this.mics = null;
       this.#apply(this.#catalog);
       this.error = "Camera disconnected. Waiting for it to come back…";
       await this.refreshCameras();
     } finally {
       this.#polling = false;
+    }
+  }
+
+  /** Re-reads the wireless microphone slots (part of every poll). */
+  async refreshMics() {
+    try {
+      this.mics = this.current ? await api.wirelessMics() : null;
+    } catch {
+      this.mics = null;
     }
   }
 
@@ -88,9 +105,12 @@ class DeviceStore {
       this.profileName = snap.profile_name;
       this.firmware = snap.firmware;
       this.presets = snap.presets;
+      this.presetRename = snap.preset_rename;
+      this.presetDelete = snap.preset_delete;
       this.gimbalVelocity = snap.gimbal_velocity;
       this.#apply(snap.features);
       this.error = null;
+      await this.refreshMics();
       await this.refreshCameras();
     } catch (e) {
       this.error = String(e);
@@ -146,6 +166,15 @@ class DeviceStore {
   async renamePreset(slot: number, name: string) {
     try {
       this.presets = await api.renamePreset(slot, name);
+      this.error = null;
+    } catch (e) {
+      this.error = String(e);
+    }
+  }
+
+  async deletePreset(slot: number) {
+    try {
+      this.presets = await api.deletePreset(slot);
       this.error = null;
     } catch (e) {
       this.error = String(e);

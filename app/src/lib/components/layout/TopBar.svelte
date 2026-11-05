@@ -1,15 +1,38 @@
 <script lang="ts">
-  import { device } from "../device.svelte";
-  import Icon from "./Icon.svelte";
-  import Popover from "./Popover.svelte";
-  import Feature from "./Feature.svelte";
+  import { device } from "../../device.svelte";
+  import Icon from "../ui/Icon.svelte";
+  import Popover from "../ui/Popover.svelte";
+  import Feature from "../controls/Feature.svelte";
+  import Toggle from "../ui/Toggle.svelte";
+  import { preview as stream } from "../../preview.svelte";
 
   let { preview = $bindable(true) }: { preview?: boolean } = $props();
 
   let gestureOpen = $state(false);
   let mirrorOpen = $state(false);
+  let voiceOpen = $state(false);
+
+  // The camera has no voice control master switch: each spoken command is
+  // switched on its own. The button counts as on when any command is.
+  const VOICE_COMMANDS = [
+    "voice_hi_tiny",
+    "voice_sleep_tiny",
+    "voice_track_me",
+    "voice_unlock_me",
+    "voice_zoom_in",
+    "voice_zoom_out",
+    "voice_presets",
+  ];
+  const voiceSupported = $derived(device.supported("voice_track_me"));
+  const voiceOn = $derived(VOICE_COMMANDS.some((id) => device.on(id)));
+  function setVoice(on: boolean) {
+    for (const id of VOICE_COMMANDS) {
+      if (device.supported(id) && device.on(id) !== on) device.set(id, on ? 1 : 0);
+    }
+  }
 
   const sleeping = $derived(device.on("sleep"));
+  const sharing = $derived(!!stream.share?.running);
   const cameraLabel = (c: { product: string | null; name: string; is_obsbot: boolean }) =>
     (c.product ?? c.name) + (c.is_obsbot ? "" : " (generic)");
 </script>
@@ -55,12 +78,44 @@
             {/if}
           </div>
         </Popover>
+        {#if voiceSupported}
+          <Popover bind:open={voiceOpen}>
+            {#snippet trigger()}
+              <button
+                class="quick-btn"
+                class:active={voiceOn}
+                title={voiceOn ? "Voice Control (on)" : "Voice Control (off)"}
+                onclick={() => (voiceOpen = !voiceOpen)}><Icon name="speaker" size={15} /></button
+              >
+            {/snippet}
+            <div class="pop">
+              <div class="row">
+                <div class="text">
+                  <span class="label">Voice Control</span>
+                  <span class="desc">Spoken commands the camera listens for, in the language below</span>
+                </div>
+                <Toggle checked={voiceOn} onchange={setVoice} />
+              </div>
+              <div class="sub">
+                <Feature id="voice_language" label="Language" />
+                <Feature id="voice_hi_tiny" />
+                <Feature id="voice_sleep_tiny" />
+                <Feature id="voice_track_me" />
+                <Feature id="voice_unlock_me" />
+                <Feature id="voice_zoom_in" />
+                <Feature id="voice_zoom_out" />
+                <Feature id="voice_zoom_factor" variant="select" label="Zoom Factor" />
+                <Feature id="voice_presets" />
+              </div>
+            </div>
+          </Popover>
+        {/if}
         <Popover bind:open={mirrorOpen}>
           {#snippet trigger()}
             <button
               class="quick-btn"
-              class:active={device.on("mirror_image")}
-              title="Mirror Image"
+              class:active={device.on("mirror_image") || stream.mirror || sharing}
+              title="Mirror and sharing"
               onclick={() => (mirrorOpen = !mirrorOpen)}><Icon name="mirror" size={15} /></button
             >
           {/snippet}
@@ -69,6 +124,28 @@
               id="mirror_image"
               description="Mirror the video directly on the device side (effective for all software that accesses the camera feed)"
             />
+            <div class="row">
+              <div class="text">
+                <span class="label">Mirror Preview</span>
+                <span class="desc">Only OBSCura's preview, like a mirror; other apps get the normal picture</span>
+              </div>
+              <Toggle checked={stream.mirror} onchange={() => stream.toggleMirror()} />
+            </div>
+            <div class="row">
+              <div class="text">
+                <span class="label">Share as "OBSCura Camera"</span>
+                <span class="desc">
+                  {sharing
+                    ? "Other apps can pick \"OBSCura Camera\"; keeps running when this window closes"
+                    : "Let OBS, Teams or a browser use the camera while the preview runs"}
+                </span>
+              </div>
+              <Toggle
+                checked={sharing}
+                disabled={!device.current}
+                onchange={() => device.current && stream.toggleShare(device.current.path)}
+              />
+            </div>
           </div>
         </Popover>
       </div>
@@ -90,8 +167,13 @@
   </div>
   <div class="hint">
     {#if device.current}
-      <span class="muted">Other apps can use the camera directly:</span>
-      select <strong>{device.current.product ?? device.current.name}</strong>.
+      {#if sharing}
+        <span class="muted">Sharing: in other apps,</span>
+        select <strong>OBSCura Camera</strong>.
+      {:else}
+        <span class="muted">Other apps can use the camera directly:</span>
+        select <strong>{device.current.product ?? device.current.name}</strong>.
+      {/if}
       Settings made here apply on the camera itself.
     {:else}
       <span class="muted">Connect an OBSBOT camera over USB.</span>
@@ -164,6 +246,24 @@
     flex-direction: column;
     gap: 12px;
     width: 280px;
+  }
+  /* Same layout as a Feature row. */
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+  .desc {
+    font-size: 12px;
+    color: var(--text-muted);
   }
   .sub {
     display: flex;

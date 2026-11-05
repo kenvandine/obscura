@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { device } from "../device.svelte";
-  import Card from "./Card.svelte";
-  import Feature from "./Feature.svelte";
-  import ConfirmDialog from "./ConfirmDialog.svelte";
-  import Toggle from "./Toggle.svelte";
-  import { api } from "../api";
+  import { device } from "../../device.svelte";
+  import Card from "../ui/Card.svelte";
+  import Feature from "../controls/Feature.svelte";
+  import ConfirmDialog from "../ui/ConfirmDialog.svelte";
+  import Toggle from "../ui/Toggle.svelte";
+  import { api, type UpdateCheck } from "../../api";
 
   let confirmReset = $state(false);
 
@@ -23,17 +23,27 @@
     }
   }
   const hex = (n: number) => n.toString(16).padStart(4, "0");
+
+  // Firmware update check: only on request, since it goes online.
+  let fw = $state<UpdateCheck | null>(null);
+  let fwError = $state<string | null>(null);
+  let fwBusy = $state(false);
+
+  async function checkFirmware() {
+    fwBusy = true;
+    fwError = null;
+    try {
+      fw = await api.checkFirmwareUpdate();
+    } catch (e) {
+      fw = null;
+      fwError = String(e);
+    } finally {
+      fwBusy = false;
+    }
+  }
 </script>
 
 <div class="tab">
-  <Card title="Audio">
-    <Feature id="mic_during_sleep" />
-    <Feature id="noise_reduction" variant="select" />
-    <Feature id="auto_gain" />
-    <Feature id="disable_microphone" />
-    <Feature id="pickup_distance" variant="select" />
-  </Card>
-
   <Card title="Device Sleep">
     <Feature id="auto_sleep" />
     {#if device.on("auto_sleep") || !device.supported("auto_sleep")}
@@ -82,7 +92,26 @@
         <dt>USB revision</dt>
         <dd>{device.current.usb_version ?? "–"}</dd>
         <dt>Firmware</dt>
-        <dd>{device.firmware?.version ?? "–"}</dd>
+        <dd class="fw">
+          {device.firmware?.version ?? "–"}
+          {#if device.firmware}
+            <button class="small" disabled={fwBusy} onclick={checkFirmware}>
+              {fwBusy ? "Checking…" : "Check for update"}
+            </button>
+          {/if}
+        </dd>
+        {#if fw || fwError}
+          <dd class="fw-result" class:update={fw?.update_available} class:error={!!fwError}>
+            {#if fwError}
+              {fwError}
+            {:else if fw?.update_available}
+              Firmware {fw.latest} is available. Install it with OBSBOT Center on Windows or
+              macOS: <span class="link">{fw.page}</span>
+            {:else if fw}
+              Up to date (latest is {fw.latest}).
+            {/if}
+          </dd>
+        {/if}
         <dt>Serial</dt>
         <dd>{device.current.serial ?? device.firmware?.serial ?? "–"}</dd>
         <dt>Node</dt>
@@ -142,5 +171,30 @@
   dd {
     margin: 0;
     overflow-wrap: anywhere;
+  }
+  .fw {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .fw button.small {
+    padding: 2px 8px;
+    font-size: 12px;
+  }
+  .fw-result {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .fw-result.update {
+    color: #f0b44c;
+  }
+  .fw-result.error {
+    color: var(--accent);
+  }
+  .link {
+    user-select: text;
+    text-decoration: underline;
   }
 </style>

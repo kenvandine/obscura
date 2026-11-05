@@ -8,6 +8,24 @@ use obsbot_core::companion::{self, Role};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(debug_assertions, unix))]
+    let _debug_feed = match obsbot_core::debug_feed::FeedServer::start_if_enabled() {
+        Ok(Some(server)) => {
+            obsbot_core::log::info(format!(
+                "Debug diagnostics feed listening at {}",
+                obsbot_core::debug_feed::socket_path().display()
+            ));
+            Some(server)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            let message = format!("couldn't start debug diagnostics feed: {error}");
+            obsbot_core::log::warn(&message);
+            eprintln!("obscura: {message}");
+            None
+        }
+    };
+
     // The panel indicator runs alongside the app, whether the app was
     // started from the indicator or directly.
     companion::apply_first_run_defaults();
@@ -30,15 +48,24 @@ pub fn run() {
             commands::open_camera,
             commands::get_features,
             commands::set_feature,
+            commands::get_log,
+            commands::live_status,
+            commands::wireless_mics,
+            commands::check_firmware_update,
+            commands::toggle_diagnostics,
             commands::gimbal_move,
             commands::save_preset,
             commands::rename_preset,
             commands::recall_preset,
+            commands::delete_preset,
             commands::get_autostart,
             commands::set_autostart,
             preview::start_preview,
             preview::preview_ready,
             preview::stop_preview,
+            preview::share_status,
+            preview::share_start,
+            preview::share_stop,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
