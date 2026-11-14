@@ -47,12 +47,9 @@ map = [[1, 0], [0, 1]]
 status = 19
 short = { id = 0x14 }
 
-# Manual zoom: ISP digital zoom, factor x100 (100..400) after a constant
-# 02000000 (the same command the gesture zoom factor sends). Query 0468
-# returns the current zoom as f32, including zoom from AI tracking.
-[features.zoom]
-query = { dst = 0x04, cmd = "0468", offsets = [0], value = "f32", scale = 100 }
-frames = [{ dst = 0x02, cmd = "4219", prefix = "02000000", value = "u32" }]
+# Manual zoom is not bound: the Tiny SE vendor command (4219) and its 0468
+# query were never verified on the Meet SE, and OBSBOT Center zooms with a
+# digital crop (short setting 21 10) that is not decoded yet.
 
 # 0 off, 1 group, 2 human, 3 hand tracking
 [features.ai_mode]
@@ -185,6 +182,7 @@ status_bits = [4, 12]
 # four u32 [x0, y0, x1, y1] in 1/10000 of the frame (a 2.5x zoom is 4000
 # wide); it is not bound.
 [features.fov]
+ignored_asleep = true
 short = { id = 0x04 }
 status = 4
 status_mask = 0x03

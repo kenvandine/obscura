@@ -79,8 +79,8 @@ from Linux. High-fps Recording needs no vendor command on Linux: pick the
 1920x1080 100 fps or 1280x720 150/120 fps MJPEG format in the recording app.
 The Tiny SE gesture switches (Locked Target, the master switch, Dynamic Zoom,
 Direction Flip) did not stop the palm gesture and the app has no such
-controls, so they are not bound. Manual zoom is unavailable (the app zooms
-with a digital crop that is not bound yet). Everything else still reuses the
+controls, so they are not bound. Manual zoom is not bound (the app zooms
+with a digital crop that is not decoded yet). Everything else still reuses the
 Tiny SE bindings and is unverified.
 
 ## Features

@@ -458,6 +458,49 @@ impl Device {
         Ok(())
     }
 
+    /// Whether the status block says the camera sleeps (the Sleep binding's value).
+    fn asleep(&self, block: &[u8]) -> bool {
+        matches!(self.profile.features.get(&FeatureId::Sleep),
+            Some(Binding::Vendor(s)) if Self::status_value(s, block).is_some_and(|r| r != 0))
+    }
+
+    /// Waits until the status block shows every packed record this Device
+    /// wrote, or STATUS_LAG has passed. A one-shot caller (obsbotctl) calls it
+    /// before exiting so the next run builds on the new word, not the stale one.
+    pub fn settle(&self) {
+        let pending: Vec<(u8, u64, Instant)> = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, (w, at))| (*id, *w, *at))
+            .collect();
+        for (id, word, at) in pending {
+            let Some(b) = self.profile.features.values().find_map(|f| match f {
+                Binding::Vendor(b)
+                    if b.status.is_some()
+                        && b.short
+                            .as_ref()
+                            .is_some_and(|s| s.id == id && !s.packed.is_empty()) =>
+                {
+                    Some(b)
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            while at.elapsed() < STATUS_LAG {
+                let seen = self
+                    .status_block()
+                    .and_then(|blk| protocol::decode_status(&blk, b.status?, b.status_value));
+                if seen.is_some_and(|w| w as u64 == word) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
     /// The record word with this feature's field set to `value`: the current
     /// word comes from the last write if it is recent, else the status block.
     fn record_word(&self, b: &VendorBinding, s: &ShortSpec, value: i64) -> Result<u64> {
@@ -579,6 +622,9 @@ impl Device {
                 if b.level == Some(Level::Magnitude) {
                     state.active = raw.is_none_or(|r| r > 0);
                 }
+                if b.ignored_asleep && status.is_some_and(|block| self.asleep(block)) {
+                    state.active = false;
+                }
             }
             Some(Binding::Lock(_)) => {
                 state.supported = true;
@@ -614,6 +660,11 @@ impl Device {
             return Err(Error::Unsupported(id.name().to_string()));
         }
         validate(&current.kind, value)?;
+        if !current.active
+            && matches!(self.profile.features.get(&id), Some(Binding::Vendor(b)) if b.ignored_asleep)
+        {
+            return Err(Error::Asleep(id.name().to_string()));
+        }
         match self.profile.features.get(&id) {
             Some(Binding::V4l2(b)) => v4l2_ctrl::set(&self.node, b, value)?,
             Some(Binding::Lock(l)) => self.set_lock(&l.lock, value != 0)?,
@@ -704,6 +755,7 @@ mod tests {
         // Field of View, status byte 4: bit 2 is the digital-zoom flag.
         assert_eq!(read(FeatureId::Fov, &[(4, 0x01)]), Some(1));
         assert_eq!(read(FeatureId::Fov, &[(4, 0x06)]), Some(2));
+        assert!(matches!(&p.features[&FeatureId::Fov], Binding::Vendor(b) if b.ignored_asleep));
         // Sleep, status byte 9: 1 awake, 3 asleep.
         assert_eq!(read(FeatureId::Sleep, &[(9, 0x01)]), Some(0));
         assert_eq!(read(FeatureId::Sleep, &[(9, 0x03)]), Some(1));

@@ -217,6 +217,10 @@ pub struct VendorBinding {
     /// `[shift, width]` of the value inside the status word, for features
     /// that share one word (see `ShortSpec::packed`).
     pub status_bits: Option<[u8; 2]>,
+    /// The camera ignores writes while it sleeps: the feature is inactive
+    /// then and `Device::set` refuses it.
+    #[serde(default)]
+    pub ignored_asleep: bool,
     /// For toggles whose camera value is the opposite of the label (e.g.
     /// "Disable Microphone" is 1 while the microphone is enabled).
     #[serde(default)]

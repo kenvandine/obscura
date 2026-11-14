@@ -14,6 +14,8 @@ pub enum Error {
     },
     #[error("feature `{0}` is not supported by this device")]
     Unsupported(String),
+    #[error("feature `{0}` is ignored while the camera sleeps; wake it first (set sleep off)")]
+    Asleep(String),
     #[error("unknown feature `{0}`")]
     UnknownFeature(String),
     #[error("value {value} out of range {min}..={max}")]
