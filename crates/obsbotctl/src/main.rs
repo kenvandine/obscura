@@ -283,6 +283,7 @@ fn main() -> Result<()> {
                 )
             })?;
             let s = dev.set(id, raw)?;
+            dev.settle();
             println!(
                 "{} = {}",
                 feature,

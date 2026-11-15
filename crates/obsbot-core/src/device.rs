@@ -10,7 +10,9 @@ use serde::Serialize;
 use crate::discovery::CameraInfo;
 use crate::error::{Error, Result};
 use crate::features::{FeatureId, FeatureKind};
-use crate::profile::{Binding, DeviceProfile, Level, LockSpec, QueryRead, VendorBinding};
+use crate::profile::{
+    Binding, DeviceProfile, Level, LockSpec, QueryRead, ShortSpec, VendorBinding,
+};
 use crate::protocol::{
     self, encode_command, encode_query, encode_short, encode_value, ValueEncoding,
 };
@@ -61,6 +63,9 @@ pub struct Device {
     /// Last non-zero level of each switch/level setting, by status offset,
     /// so switching it back on restores the level.
     levels: Mutex<HashMap<usize, i64>>,
+    /// Last word written to each packed record, by short id, and when: the
+    /// status block lags a write, so back-to-back writes build on this.
+    records: Mutex<HashMap<u8, (u64, Instant)>>,
     /// Values saved by a host-side lock, while locked.
     locked: Mutex<Option<Vec<(FeatureId, i64)>>>,
 }
@@ -78,6 +83,7 @@ impl Device {
             seq: AtomicU16::new(0),
             written: Mutex::new(HashMap::new()),
             levels: Mutex::new(HashMap::new()),
+            records: Mutex::new(HashMap::new()),
             locked: Mutex::new(None),
         })
     }
@@ -275,8 +281,12 @@ impl Device {
     /// Reads a vendor setting's raw value from the status block.
     fn status_value(b: &VendorBinding, block: &[u8]) -> Option<i64> {
         let v = protocol::decode_status(block, b.status?, b.status_value)?;
-        Some(match b.status_mask {
+        let v = match b.status_mask {
             Some(m) => ((v as u8 & m) >> m.trailing_zeros()) as i64,
+            None => v,
+        };
+        Some(match b.status_bits {
+            Some([shift, width]) => (v >> shift) & ((1 << width) - 1),
             None => v,
         })
     }
@@ -428,12 +438,92 @@ impl Device {
             )?;
         }
         if let Some(s) = &b.short {
-            let mut payload = s.prefix.clone();
-            payload.extend(encode_value(s.value, value, 1));
+            let (payload, word) = if s.packed.is_empty() {
+                let mut payload = s.prefix.clone();
+                payload.extend(encode_value(s.value, value, 1));
+                (payload, None)
+            } else {
+                let word = self.record_word(b, s, value)?;
+                (pack_record(&s.packed, word), Some(word))
+            };
             let packet = encode_short(s.id, &payload);
             uvc_xu::set(&self.node, protocol::XU_UNIT, protocol::SEL_STATUS, &packet)?;
+            if let Some(word) = word {
+                self.records
+                    .lock()
+                    .unwrap()
+                    .insert(s.id, (word, Instant::now()));
+            }
         }
         Ok(())
+    }
+
+    /// Whether the status block says the camera sleeps (the Sleep binding's value).
+    fn asleep(&self, block: &[u8]) -> bool {
+        matches!(self.profile.features.get(&FeatureId::Sleep),
+            Some(Binding::Vendor(s)) if Self::status_value(s, block).is_some_and(|r| r != 0))
+    }
+
+    /// Waits until the status block shows every packed record this Device
+    /// wrote, or STATUS_LAG has passed. A one-shot caller (obsbotctl) calls it
+    /// before exiting so the next run builds on the new word, not the stale one.
+    pub fn settle(&self) {
+        let pending: Vec<(u8, u64, Instant)> = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, (w, at))| (*id, *w, *at))
+            .collect();
+        for (id, word, at) in pending {
+            let Some(b) = self.profile.features.values().find_map(|f| match f {
+                Binding::Vendor(b)
+                    if b.status.is_some()
+                        && b.short
+                            .as_ref()
+                            .is_some_and(|s| s.id == id && !s.packed.is_empty()) =>
+                {
+                    Some(b)
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            while at.elapsed() < STATUS_LAG {
+                let seen = self
+                    .status_block()
+                    .and_then(|blk| protocol::decode_status(&blk, b.status?, b.status_value));
+                if seen.is_some_and(|w| w as u64 == word) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    /// The record word with this feature's field set to `value`: the current
+    /// word comes from the last write if it is recent, else the status block.
+    fn record_word(&self, b: &VendorBinding, s: &ShortSpec, value: i64) -> Result<u64> {
+        let unsupported = || Error::Unsupported("packed setting without readback".into());
+        let [shift, width] = b.status_bits.ok_or_else(unsupported)?;
+        let recent = self
+            .records
+            .lock()
+            .unwrap()
+            .get(&s.id)
+            .filter(|(_, at)| at.elapsed() < STATUS_LAG)
+            .map(|(w, _)| *w);
+        let word = match recent {
+            Some(w) => w,
+            None => {
+                let block = self.status_block().ok_or_else(unsupported)?;
+                let offset = b.status.ok_or_else(unsupported)?;
+                protocol::decode_status(&block, offset, b.status_value).ok_or_else(unsupported)?
+                    as u64
+            }
+        };
+        let mask = ((1u64 << width) - 1) << shift;
+        Ok((word & !mask) | (((value as u64) << shift) & mask))
     }
 
     /// Opens a camera with the best matching builtin profile.
@@ -532,6 +622,9 @@ impl Device {
                 if b.level == Some(Level::Magnitude) {
                     state.active = raw.is_none_or(|r| r > 0);
                 }
+                if b.ignored_asleep && status.is_some_and(|block| self.asleep(block)) {
+                    state.active = false;
+                }
             }
             Some(Binding::Lock(_)) => {
                 state.supported = true;
@@ -567,6 +660,11 @@ impl Device {
             return Err(Error::Unsupported(id.name().to_string()));
         }
         validate(&current.kind, value)?;
+        if !current.active
+            && matches!(self.profile.features.get(&id), Some(Binding::Vendor(b)) if b.ignored_asleep)
+        {
+            return Err(Error::Asleep(id.name().to_string()));
+        }
         match self.profile.features.get(&id) {
             Some(Binding::V4l2(b)) => v4l2_ctrl::set(&self.node, b, value)?,
             Some(Binding::Lock(l)) => self.set_lock(&l.lock, value != 0)?,
@@ -588,6 +686,18 @@ impl Device {
     }
 }
 
+/// Splits a record word into its `[shift, width]` fields, each little-endian
+/// in `ceil(width / 8)` bytes.
+fn pack_record(fields: &[[u8; 2]], word: u64) -> Vec<u8> {
+    fields
+        .iter()
+        .flat_map(|&[shift, width]| {
+            let field = (word >> shift) & ((1 << width) - 1);
+            field.to_le_bytes()[..usize::from(width).div_ceil(8)].to_vec()
+        })
+        .collect()
+}
+
 fn validate(kind: &FeatureKind, value: i64) -> Result<()> {
     let (min, max) = match kind {
         FeatureKind::Toggle => (0, 1),
@@ -606,5 +716,60 @@ fn validate(kind: &FeatureKind, value: i64) -> Result<()> {
         Ok(())
     } else {
         Err(Error::OutOfRange { value, min, max })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Status words and writes from OBSBOT Center on a Meet SE (fw 4.6.4.1).
+    #[test]
+    fn meet_se_status_readback_matches_captures() {
+        let p = DeviceProfile::for_usb(0x3564, 0xfefe);
+        let read = |id: FeatureId, bytes: &[(usize, u8)]| {
+            let Binding::Vendor(b) = &p.features[&id] else {
+                panic!("{id:?} is a vendor feature")
+            };
+            let mut block = [0u8; 60];
+            for &(i, v) in bytes {
+                block[i] = v;
+            }
+            Device::status_value(b, &block)
+        };
+        // Record word at 38..40: bit 0 on, bits 1-2 mode, bit 3 zoom on, bits 4-15 factor.
+        let word = |w: u16| [(38, w as u8), (39, (w >> 8) as u8)];
+        // 0x0c8a: off, Single Close-up, zoom on, 2.00x. 0x0e12: zoom off, 2.25x.
+        for (w, framing, mode, zoom, factor) in [
+            (0x0c8a, 0, 1, 1, 200),
+            (0x0e12, 0, 1, 0, 225),
+            (0x0c89, 1, 0, 1, 200),
+            (0x0c8d, 1, 2, 1, 200),
+            (0x190a, 0, 1, 1, 400),
+        ] {
+            assert_eq!(read(FeatureId::AutoFraming, &word(w)), Some(framing));
+            assert_eq!(read(FeatureId::CompositionMode, &word(w)), Some(mode));
+            assert_eq!(read(FeatureId::GestureZoom, &word(w)), Some(zoom));
+            assert_eq!(read(FeatureId::GestureZoomFactor, &word(w)), Some(factor));
+        }
+        // Field of View, status byte 4: bit 2 is the digital-zoom flag.
+        assert_eq!(read(FeatureId::Fov, &[(4, 0x01)]), Some(1));
+        assert_eq!(read(FeatureId::Fov, &[(4, 0x06)]), Some(2));
+        assert!(matches!(&p.features[&FeatureId::Fov], Binding::Vendor(b) if b.ignored_asleep));
+        // Sleep, status byte 9: 1 awake, 3 asleep.
+        assert_eq!(read(FeatureId::Sleep, &[(9, 0x01)]), Some(0));
+        assert_eq!(read(FeatureId::Sleep, &[(9, 0x03)]), Some(1));
+    }
+
+    /// The `20 05 ...` payloads OBSBOT Center sent for the same words.
+    #[test]
+    fn packed_record_matches_captured_writes() {
+        let fields = [[0, 1], [1, 2], [3, 1], [4, 12]];
+        assert_eq!(pack_record(&fields, 0x0c8a), [0, 1, 1, 0xc8, 0x00]);
+        assert_eq!(pack_record(&fields, 0x07da), [0, 1, 1, 0x7d, 0x00]);
+        assert_eq!(pack_record(&fields, 0x0e12), [0, 1, 0, 0xe1, 0x00]);
+        assert_eq!(pack_record(&fields, 0x190a), [0, 1, 1, 0x90, 0x01]);
+        assert_eq!(pack_record(&fields, 0x0c89), [1, 0, 1, 0xc8, 0x00]);
+        assert_eq!(pack_record(&fields, 0x0c8d), [1, 2, 1, 0xc8, 0x00]);
     }
 }
