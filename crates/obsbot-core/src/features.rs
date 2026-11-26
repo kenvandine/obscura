@@ -97,6 +97,8 @@ features! {
     GestureZoomFactor     "gesture_zoom_factor" => "gesture", "Zoom Factor", range(100, 400, 100, Some("x"));
     GestureDynamicZoom    "gesture_dynamic_zoom" => "gesture", "Dynamic Zoom", FeatureKind::Toggle;
     GestureDirectionFlip  "gesture_direction_flip" => "gesture", "Direction Flip", FeatureKind::Toggle;
+    AutoFraming           "auto_framing" => "gesture", "Auto Framing", FeatureKind::Toggle;
+    CompositionMode       "composition_mode" => "gesture", "Composition Mode", choice(&[(0, "Group Mode"), (2, "Upper Body"), (1, "Single Close-up")]);
     MirrorImage           "mirror_image" => "header", "Mirror Image", FeatureKind::Toggle;
     Sleep                 "sleep" => "header", "Sleep", FeatureKind::Toggle;
 
@@ -109,6 +111,7 @@ features! {
     Pan                   "pan" => "gimbal", "Pan", range(-100, 100, 1, None);
     Tilt                  "tilt" => "gimbal", "Tilt", range(-100, 100, 1, None);
     Zoom                  "zoom" => "gimbal", "Manual Zoom", range(100, 400, 100, Some("x"));
+    Fov                   "fov" => "gimbal", "Field of View", choice(&[(0, "Wide"), (1, "Medium"), (2, "Narrow")]);
     GimbalReset           "gimbal_reset" => "gimbal", "Reset View", FeatureKind::Action;
     GimbalReverse         "gimbal_reverse" => "gimbal", "View and Gimbal Reverse", FeatureKind::Toggle;
 
@@ -133,10 +136,10 @@ features! {
 
     // Audio
     MicDuringSleep        "mic_during_sleep" => "audio", "Microphone Status During Sleep", FeatureKind::Toggle;
-    NoiseReduction        "noise_reduction" => "audio", "Noise Reduction", choice(&[(0, "Off"), (1, "Low"), (2, "Medium"), (3, "High")]);
+    NoiseReduction        "noise_reduction" => "audio", "Noise Reduction", choice(&[(0, "Off"), (1, "Weak"), (2, "Medium"), (3, "Strong")]);
     AutoGain              "auto_gain" => "audio", "Auto Gain", FeatureKind::Toggle;
     DisableMicrophone     "disable_microphone" => "audio", "Disable Microphone", FeatureKind::Toggle;
-    PickupDistance        "pickup_distance" => "audio", "Radio Distance", choice(&[(0, "Close"), (1, "Medium"), (2, "Far")]);
+    PickupDistance        "pickup_distance" => "audio", "Radio Distance", choice(&[(0, "Close"), (1, "Standard"), (2, "Far")]);
 
     // Device sleep
     AutoSleep             "auto_sleep" => "sleep", "Auto Sleep", FeatureKind::Toggle;
