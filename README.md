@@ -46,6 +46,7 @@ using a vendor protocol reverse-engineered from USB captures.
 | OBSBOT Tiny 4K | `3564:fef4` | Assumed supported, unverified (see below) |
 | OBSBOT Meet 2 | `3564:fefb` | Assumed supported minus gimbal features, unverified (see below) |
 | OBSBOT Meet SE | `3564:fefe` | Assumed supported minus gimbal features, unverified (see below) |
+| OBSBOT Meet Flip | `3564:ff06` | HDR, AF mode, field of view, sleep, pickup mode, mirror, mic and status light verified on firmware 4.5.3.3; auto framing, composition and gesture zoom decoded but not bound yet; no gimbal |
 | Other OBSBOT models | `3564:*` | Standard UVC controls only (see below) |
 | Any other UVC webcam | – | Standard UVC controls, with `--all` / `OBSBOT_ALL_CAMERAS=1` |
 

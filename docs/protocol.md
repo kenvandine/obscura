@@ -115,6 +115,35 @@ the gesture switches that were on; unlocking restores the AI mode only.
 | Radio Distance | `1b 01 v` | [34] low bits | 0 Close, 1–2 (labels pending) |
 | Microphone enabled (OBSBOT Center: "Disable Microphone", inverted) | `1c 01 v` | [34] bit 4 (0x10) | 1 enabled, 0 disabled ✅; the camera re-enumerates on USB, without its audio interface when disabled |
 
+## OBSBOT Meet Flip (3564:ff06, firmware 4.5.3.3)
+
+Same envelope as above (XU 2, selector 2 frames and selector 6 short
+settings), decoded from OBSBOT Center captures and then written from Linux and
+checked against the selector 6 status block. Commands that match the Tiny SE
+are not repeated here.
+
+| Feature | Write | Status byte | Values |
+|---|---|---|---|
+| HDR | `01 01 v` | [6] | 0/1 ✅ |
+| Mic during sleep | `13 01 v` | [16] | 0/1 ✅ |
+| Brightness of the status light | `1a 01 v` | [33] | 1..3 ✅ |
+| Status light on/off | `1a 01 v` | [45] | 0 off, 1 on ✅ (separate from brightness, unlike the Tiny) |
+| Microphone enabled | `1c 01 v` | [34] bit 0x10 | 1 enabled, 0 disabled ✅; the camera re-enumerates on USB, without its audio interfaces when disabled |
+| Pickup mode | `22 02 00 v` | [40] bits 0x38 (`v << 3`) | 0 Smart Omni, 2 Directional, 4 Dual-Directional, 5 Pure Audio ✅ |
+| Field of view | `04 01 v` | none | 0 Wide, 1 Medium, 2 Narrow ✅ wide and narrow checked on the picture |
+| Auto focus mode | dst 02 `0236` u32 | [13] | 0 Global, 1 Face ✅ |
+| Sleep / Resume | dst 02 `c2a0` u32 1 / 0 | [9] bit 0x02 | [9] is 01 awake, 03 asleep ✅ |
+| Mirror image | `14 01 v` | [19] | 0/1 ✅ (same as the Tiny) |
+| Auto framing, composition, gesture zoom and its factor | `20 05 A B G fLo fHi`, one setting rewritten whole on every change | u16 at [38..40]: `factor << 4 \| G << 3 \| B << 1 \| A` | A auto framing 0/1; B composition 0 Group, 1 Single close-up, 2 Upper body; G gesture zoom 0/1; f gesture zoom factor x100 (u16 LE; 100..400 seen, default 200); decoded from captures, *not bound* (needs a read-modify-write binding) |
+| Digital zoom / crop window | `21 10` + 4 x i32 | ? | bursts while zooming or panning in OBSBOT Center, *not bound* |
+| Presets | dst 02 `42d0` read, `82d0` save/delete, `c2d0` recall | | 3 slots; save carries the slot and a name; *not bound* |
+
+Byte 43 of the status block changes on its own and is ignored. Beauty, blur
+and rotation in OBSBOT Center produced no camera command (rotation only
+restarts the video stream), so they are applied on the host; `12 01 01` is
+sent repeatedly at unrelated times. The Flip has no noise reduction, auto
+gain or radio distance.
+
 ## Standard UVC controls used by OBSBOT Center
 
 Confirmed in the captures: Auto Focus and Focus are Camera Terminal

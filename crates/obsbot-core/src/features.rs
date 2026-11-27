@@ -116,6 +116,7 @@ features! {
     Hdr                   "hdr" => "image", "HDR", FeatureKind::Toggle;
     AutoFocus             "auto_focus" => "image", "Auto Focus", FeatureKind::Toggle;
     AutoFocusMode         "auto_focus_mode" => "image", "Auto Focus Mode", choice(&[(0, "Global"), (1, "Face")]);
+    FieldOfView           "field_of_view" => "image", "Field of View", choice(&[(0, "Wide"), (1, "Medium"), (2, "Narrow")]);
     Focus                 "focus" => "image", "Focus", range(0, 100, 1, None);
     AutoExposure          "auto_exposure" => "image", "Auto Exposure", FeatureKind::Toggle;
     AutoExposureMode      "auto_exposure_mode" => "image", "Auto Exposure Mode", choice(&[(0, "Global"), (1, "Face")]);
@@ -137,6 +138,7 @@ features! {
     AutoGain              "auto_gain" => "audio", "Auto Gain", FeatureKind::Toggle;
     DisableMicrophone     "disable_microphone" => "audio", "Disable Microphone", FeatureKind::Toggle;
     PickupDistance        "pickup_distance" => "audio", "Radio Distance", choice(&[(0, "Close"), (1, "Medium"), (2, "Far")]);
+    AudioMode             "audio_mode" => "audio", "Pickup Mode", choice(&[(5, "Pure Audio"), (0, "Smart Omni"), (2, "Directional"), (4, "Dual-Directional")]);
 
     // Device sleep
     AutoSleep             "auto_sleep" => "sleep", "Auto Sleep", FeatureKind::Toggle;
